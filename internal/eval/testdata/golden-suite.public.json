@@ -1,0 +1,10 @@
+{
+  "gen_manifest": "manifest.public.json",
+  "repos": [
+    {
+      "name": "contextmaxxer",
+      "index": "../../../.contextmaxxer/index.db"
+    }
+  ],
+  "self_n": 120
+}

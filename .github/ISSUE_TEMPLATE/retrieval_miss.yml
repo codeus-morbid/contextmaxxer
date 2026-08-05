@@ -1,0 +1,56 @@
+name: Retrieval miss
+description: Report a query that did not surface the expected symbol
+title: "retrieval: "
+labels: [retrieval]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Retrieval misses are especially useful. Share only code and identifiers
+        you are authorized to publish; a minimal public reproduction is ideal.
+  - type: input
+    id: version
+    attributes:
+      label: Contextmaxxer version
+    validations:
+      required: true
+  - type: input
+    id: query
+    attributes:
+      label: Query
+      description: Redact this if it contains private product terminology.
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: Expected symbol or file
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Returned results
+      description: List useful positions and obvious false positives; do not paste proprietary bodies.
+    validations:
+      required: true
+  - type: dropdown
+    id: index_mode
+    attributes:
+      label: Index mode
+      options:
+        - Full embeddings
+        - Fast / structural
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: languages
+    attributes:
+      label: Repository languages
+      placeholder: Go, TypeScript
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Public reproduction
+      description: Link a public repository and pin a commit when possible.

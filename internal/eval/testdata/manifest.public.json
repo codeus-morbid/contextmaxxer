@@ -1,0 +1,10 @@
+{
+  "projects": [
+    {
+      "name": "contextmaxxer",
+      "index_path": "../../../.contextmaxxer/index.db",
+      "cases_path": "queries.contextmaxxer.gen.json",
+      "cases_holdout_path": "queries.contextmaxxer.gen.holdout.json"
+    }
+  ]
+}

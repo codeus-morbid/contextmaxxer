@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible crash, incorrect behavior or setup failure
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include proprietary source, credentials or raw feedback logs.
+        Security issues belong in the private process described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Contextmaxxer version
+      placeholder: v0.1.0-beta.1 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows amd64
+        - Linux amd64
+        - WSL amd64
+        - Unsupported platform
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Include the smallest safe commands or repository needed to reproduce the behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Redact paths, queries and logs before posting.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Host, languages, index mode and anything else that changes the reproduction.

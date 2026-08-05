@@ -1,0 +1,77 @@
+version: '3'
+
+vars:
+  MODULE: github.com/codeus-morbid/contextmaxxer
+  BINARY: contextmaxxer
+  BUILD_DIR: .task/build
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "none"
+  BUILD_TIME:
+    sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+  LDFLAGS: >-
+    -X main.version={{.VERSION}}
+    -X main.commit={{.COMMIT}}
+    -X main.buildTime={{.BUILD_TIME}}
+
+tasks:
+  bootstrap:
+    desc: Build the pinned tokenizer library required by CGo
+    cmds:
+      - cmd: bash scripts/build-tokenizers.sh
+        platforms: [linux]
+      - cmd: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-tokenizers.ps1
+        platforms: [windows]
+
+  build:
+    desc: Build the binary for the current OS into .task/build
+    deps: [bootstrap]
+    cmds:
+      - cmd: mkdir -p {{.BUILD_DIR}} && go build -ldflags "{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.BINARY}} ./cmd/contextmaxxer
+        platforms: [linux]
+      - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '{{.BUILD_DIR}}' | Out-Null; go build -ldflags '{{.LDFLAGS}}' -o '{{.BUILD_DIR}}/{{.BINARY}}.exe' ./cmd/contextmaxxer"
+        platforms: [windows]
+
+  build:windows:
+    desc: Build the Windows binary natively into .task/build
+    deps: [bootstrap]
+    env:
+      CGO_ENABLED: '1'
+      GOOS: windows
+      GOARCH: amd64
+    cmds:
+      - powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '{{.BUILD_DIR}}' | Out-Null; go build -ldflags '{{.LDFLAGS}}' -o '{{.BUILD_DIR}}/{{.BINARY}}.exe' ./cmd/contextmaxxer"
+
+  setup:windows-tokenizers:
+    desc: Build the pinned Windows tokenizer library (requires rustup, git, w64devkit gcc)
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-tokenizers.ps1
+
+  setup:linux-tokenizers:
+    desc: Build the pinned Linux tokenizer library (requires rustup, git and gcc)
+    platforms: [linux]
+    cmds:
+      - bash scripts/build-tokenizers.sh
+
+  test:
+    desc: Run tests
+    deps: [bootstrap]
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run golangci-lint
+    deps: [bootstrap]
+    cmds:
+      - golangci-lint run
+
+  run:
+    desc: Build and run with subcommand (task run -- index /path)
+    cmds:
+      - go run -ldflags "{{.LDFLAGS}}" ./cmd/contextmaxxer {{.CLI_ARGS}}
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy

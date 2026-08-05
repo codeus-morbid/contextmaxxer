@@ -1,0 +1,35 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gocritic
+    - revive
+    - ineffassign
+    - unconvert
+    - misspell
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+issues:
+  exclude-dirs:
+    - testdata
+    - vendor
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

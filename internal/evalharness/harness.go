@@ -1,0 +1,200 @@
+// Package evalharness drives the shipped binary's `mcp` subcommand over
+// JSON-RPC stdio, exactly like an agent host does. Extracted from cmd/mcpeval
+// so every served-path evaluation tool (mcpeval, selfsweep, giteval) measures
+// the same stack users run instead of the retrieval library.
+package evalharness
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+)
+
+type rpcResp struct {
+	ID     int `json:"id"`
+	Result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	} `json:"result"`
+}
+
+type toolPayload struct {
+	Symbols []struct {
+		Name      string  `json:"name"`
+		Score     float32 `json:"score"`
+		Relevance float32 `json:"relevance"`
+	} `json:"symbols"`
+	RetrievalHealth *struct {
+		Confidence  string  `json:"confidence"`
+		TopScoreGap float32 `json:"top_score_gap"`
+	} `json:"retrieval_health"`
+}
+
+// Result is one find_context response, reduced to what evaluation needs.
+type Result struct {
+	Names      []string
+	Scores     []float32
+	Relevance  []float32
+	Confidence string  // "" when the server omitted retrieval_health
+	TopGap     float32 // relative top1-top2 gap as the server computed it
+}
+
+// Server is one spawned `<bin> mcp --index <path>` process.
+type Server struct {
+	cmd        *exec.Cmd
+	in         *json.Encoder
+	out        *bufio.Scanner
+	seq        int
+	seedK      int
+	skipIntent bool
+}
+
+// Start spawns the server and completes the MCP initialize handshake.
+func Start(bin, indexPath string) (*Server, error) {
+	cmd := exec.Command(bin, "mcp", "--index", indexPath)
+	cmd.Stderr = nil // server logs are noise here
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	s := &Server{cmd: cmd, in: json.NewEncoder(stdin), out: sc}
+
+	if err := s.send(map[string]any{
+		"jsonrpc": "2.0", "id": s.next(), "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "evalharness", "version": "0"},
+		},
+	}); err != nil {
+		return nil, err
+	}
+	if _, err := s.recv(s.seq); err != nil {
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+	if err := s.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Server) next() int { s.seq++; return s.seq }
+
+func (s *Server) send(v any) error { return s.in.Encode(v) }
+
+func (s *Server) recv(wantID int) (*rpcResp, error) {
+	for s.out.Scan() {
+		line := s.out.Bytes()
+		var r rpcResp
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue // notifications/log lines
+		}
+		if r.ID == wantID {
+			return &r, nil
+		}
+	}
+	if err := s.out.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("server closed before response %d", wantID)
+}
+
+// SetSkipIntent disables the intent ranker for every subsequent call on this
+// server (experiment knob).
+func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
+
+// SeedK, when non-zero, overrides the server's seed-pool size for every
+// subsequent call on this server (experiment knob; 0 = server default).
+func (s *Server) SetSeedK(k int) { s.seedK = k }
+
+// FindContext calls the find_context tool and returns ranked qualified names.
+func (s *Server) FindContext(query string, maxResults int) ([]string, error) {
+	res, err := s.Find(query, maxResults)
+	if err != nil {
+		return nil, err
+	}
+	return res.Names, nil
+}
+
+// FindContextHealth additionally returns the retrieval_health confidence
+// ("" when the server omitted the block, i.e. answered confidently).
+func (s *Server) FindContextHealth(query string, maxResults int) ([]string, string, error) {
+	res, err := s.Find(query, maxResults)
+	if err != nil {
+		return nil, "", err
+	}
+	return res.Names, res.Confidence, nil
+}
+
+// Find returns the full reduced response (names, scores, health).
+func (s *Server) Find(query string, maxResults int) (Result, error) {
+	id := s.next()
+	args := map[string]any{
+		"query":       query,
+		"max_results": maxResults,
+		// json: harnesses score ranking, not encoding; the md and
+		// json paths share the retrieval result.
+		"format": "json",
+	}
+	if s.seedK > 0 {
+		args["seed_k"] = s.seedK
+	}
+	if s.skipIntent {
+		args["skip_intent"] = true
+	}
+	if err := s.send(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "find_context",
+			"arguments": args,
+		},
+	}); err != nil {
+		return Result{}, err
+	}
+	r, err := s.recv(id)
+	if err != nil {
+		return Result{}, err
+	}
+	if r.Result.IsError || len(r.Result.Content) == 0 {
+		return Result{}, fmt.Errorf("tool error for %q", query)
+	}
+	var p toolPayload
+	if err := json.Unmarshal([]byte(r.Result.Content[0].Text), &p); err != nil {
+		return Result{}, fmt.Errorf("parse payload: %w", err)
+	}
+	out := Result{
+		Names:     make([]string, len(p.Symbols)),
+		Scores:    make([]float32, len(p.Symbols)),
+		Relevance: make([]float32, len(p.Symbols)),
+	}
+	for i, sym := range p.Symbols {
+		out.Names[i] = sym.Name
+		out.Scores[i] = sym.Score
+		out.Relevance[i] = sym.Relevance
+	}
+	if p.RetrievalHealth != nil {
+		out.Confidence = p.RetrievalHealth.Confidence
+		out.TopGap = p.RetrievalHealth.TopScoreGap
+	}
+	return out, nil
+}
+
+// Stop kills the server process.
+func (s *Server) Stop() {
+	if s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	_ = s.cmd.Wait()
+}

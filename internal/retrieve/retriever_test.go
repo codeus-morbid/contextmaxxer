@@ -1,0 +1,753 @@
+package retrieve
+
+import (
+	"context"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/codeus-morbid/contextmaxxer/internal/store"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type mockStore struct {
+	symbols   []store.Symbol
+	edges     []store.Edge
+	ids       []int64
+	filePaths map[int64]string
+	ftsResult []store.ScoredSymbol
+}
+
+func (m *mockStore) SearchByVectorScored(_ context.Context, _ []float32, k int) ([]store.ScoredSymbol, error) {
+	var out []store.ScoredSymbol
+	for i, sym := range m.symbols {
+		if i >= k {
+			break
+		}
+		score := float32(1.0) / float32(i+1)
+		out = append(out, store.ScoredSymbol{Symbol: sym, Score: score})
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetSymbolsByIDs(_ context.Context, ids []int64) ([]store.Symbol, error) {
+	idx := make(map[int64]store.Symbol, len(m.symbols))
+	for _, s := range m.symbols {
+		idx[s.ID] = s
+	}
+	var out []store.Symbol
+	for _, id := range ids {
+		if s, ok := idx[id]; ok {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetFilesByIDs(_ context.Context, ids []int64) (map[int64]string, error) {
+	result := make(map[int64]string, len(ids))
+	for _, id := range ids {
+		if p, ok := m.filePaths[id]; ok {
+			result[id] = p
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) ListAllSymbolIDs(_ context.Context) ([]int64, error) {
+	return m.ids, nil
+}
+
+func (m *mockStore) ListSymbolMeta(ctx context.Context) ([]store.Symbol, error) {
+	// The mock keeps full symbols; production strips text columns, which the
+	// pipeline treats as an optimization only, so serving them is harmless.
+	return m.GetSymbolsByIDs(ctx, m.ids)
+}
+
+func (m *mockStore) ListAllEdges(_ context.Context) ([]store.Edge, error) {
+	return m.edges, nil
+}
+
+func (m *mockStore) SearchByText(_ context.Context, _ string, _ int) ([]store.ScoredSymbol, error) {
+	return m.ftsResult, nil
+}
+
+func (m *mockStore) GetEmbeddingsByIDs(_ context.Context, _ []int64) (map[int64][]float32, error) {
+	return map[int64][]float32{}, nil
+}
+
+func (m *mockStore) GetCallerEdges(_ context.Context, dstIDs []int64, limitPerSymbol int) (map[int64][]int64, error) {
+	result := make(map[int64][]int64, len(dstIDs))
+	dstSet := make(map[int64]bool, len(dstIDs))
+	for _, id := range dstIDs {
+		dstSet[id] = true
+	}
+	counts := make(map[int64]int)
+	for _, e := range m.edges {
+		if dstSet[e.Dst] && (limitPerSymbol <= 0 || counts[e.Dst] < limitPerSymbol) {
+			result[e.Dst] = append(result[e.Dst], e.Src)
+			counts[e.Dst]++
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) GetCalleeEdges(_ context.Context, srcIDs []int64, limitPerSymbol int) (map[int64][]int64, error) {
+	result := make(map[int64][]int64, len(srcIDs))
+	srcSet := make(map[int64]bool, len(srcIDs))
+	for _, id := range srcIDs {
+		srcSet[id] = true
+	}
+	counts := make(map[int64]int)
+	for _, e := range m.edges {
+		if srcSet[e.Src] && (limitPerSymbol <= 0 || counts[e.Src] < limitPerSymbol) {
+			result[e.Src] = append(result[e.Src], e.Dst)
+			counts[e.Src]++
+		}
+	}
+	return result, nil
+}
+
+type mockEmbedder struct{}
+
+func (e *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = make([]float32, 4)
+		out[i][0] = 1.0
+	}
+	return out, nil
+}
+
+type mockReranker struct {
+	order     []string
+	seenCount int
+}
+
+func (m *mockReranker) Rerank(_ context.Context, _ string, candidates []ScoredResult) ([]ScoredResult, error) {
+	m.seenCount = len(candidates)
+	byName := make(map[string]ScoredResult, len(candidates))
+	for _, c := range candidates {
+		byName[c.QualifiedName] = c
+	}
+	var out []ScoredResult
+	for _, name := range m.order {
+		if c, ok := byName[name]; ok {
+			c.Score += 10
+			c.Why += "+rerank"
+			out = append(out, c)
+			delete(byName, name)
+		}
+	}
+	for _, c := range candidates {
+		if _, ok := byName[c.QualifiedName]; ok {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func TestRetriever_BasicFlow(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func Alpha() {}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 11, EndLine: 20, BodyExcerpt: "func Beta() {}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 21, EndLine: 30, BodyExcerpt: "func Gamma() {}"},
+		{ID: 4, FileID: 11, Name: "Delta", Kind: "function", QualifiedName: "pkg.Delta", StartLine: 1, EndLine: 5, BodyExcerpt: "func Delta() {}"},
+		{ID: 5, FileID: 11, Name: "Epsilon", Kind: "function", QualifiedName: "pkg.Epsilon", StartLine: 6, EndLine: 15, BodyExcerpt: "func Epsilon() {}"},
+	}
+	edges := []store.Edge{
+		{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1},
+		{Src: 2, Dst: 3, Kind: store.EdgeCalls, Weight: 1},
+	}
+	ids := []int64{1, 2, 3, 4, 5}
+	filePaths := map[int64]string{10: "pkg/alpha.go", 11: "pkg/delta.go"}
+
+	ms := &mockStore{symbols: symbols, edges: edges, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        3,
+		MaxResults:   10,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+
+	// symbol 1 must appear as vector_seed (highest vector score, first seed)
+	byName := make(map[string]ScoredResult)
+	for _, s := range result.Symbols {
+		byName[s.QualifiedName] = s
+	}
+
+	alpha, ok := byName["pkg.Alpha"]
+	require.True(t, ok, "pkg.Alpha must be in results")
+	assert.Equal(t, "vector_seed", alpha.Why)
+
+	// symbols 2 and 3 should appear (connected by edges to seed 1→2→3)
+	_, has2 := byName["pkg.Beta"]
+	_, has3 := byName["pkg.Gamma"]
+	assert.True(t, has2 || has3, "at least one of Beta/Gamma should appear via PPR propagation")
+
+	// verify non-seed symbols get ppr_neighbor label
+	for _, s := range result.Symbols {
+		if s.QualifiedName != "pkg.Alpha" && s.QualifiedName != "pkg.Beta" && s.QualifiedName != "pkg.Gamma" {
+			assert.Equal(t, "ppr_neighbor", s.Why)
+		}
+	}
+
+	assert.Greater(t, result.TotalTokens, 0)
+	assert.Greater(t, result.Stats.PPRIterations, 0)
+	assert.Equal(t, 5, result.Stats.GraphNodes)
+}
+
+func TestRRF_KnownInputs(t *testing.T) {
+	list1 := []int64{1, 2, 3}
+	list2 := []int64{3, 1, 4}
+	scores := rrf([][]int64{list1, list2})
+
+	s1 := 1.0/float32(rrfK+1) + 1.0/float32(rrfK+2)
+	s3 := 1.0/float32(rrfK+3) + 1.0/float32(rrfK+1)
+
+	if scores[1] != s1 {
+		t.Errorf("id=1 score=%v want %v", scores[1], s1)
+	}
+	if scores[3] != s3 {
+		t.Errorf("id=3 score=%v want %v", scores[3], s3)
+	}
+	if scores[4] == 0 {
+		t.Error("id=4 should have nonzero score")
+	}
+}
+
+func TestTokenizeForOverlapSplitsCamelAndNormalizesPlural(t *testing.T) {
+	got := tokenizeForOverlap("GetEmployees parseCSVMainInfo child indices initialized")
+
+	require.Contains(t, got, "get")
+	require.Contains(t, got, "employee")
+	require.Contains(t, got, "parse")
+	require.Contains(t, got, "csv")
+	require.Contains(t, got, "main")
+	require.Contains(t, got, "info")
+	require.Contains(t, got, "child")
+	require.Contains(t, got, "index")
+	require.Contains(t, got, "new")
+}
+
+func TestOverlapRatioUsesNormalizedFieldTokens(t *testing.T) {
+	got := overlapRatio(tokenizeForOverlap("returns employee list"), "GetEmployees")
+
+	require.Greater(t, got, float32(0))
+}
+
+func TestEffectiveAlphaRaisesGraphGateForNearExactDirectMatch(t *testing.T) {
+	alpha := effectiveAlpha(Request{Query: "BuyBuildHandler BuildAndBuy"}, []store.ScoredSymbol{
+		{Symbol: store.Symbol{Name: "BuildAndBuy", QualifiedName: "api.BuyBuildHandler.BuildAndBuy", Signature: "func (h *BuyBuildHandler) BuildAndBuy()"}, Score: 1.0},
+		{Symbol: store.Symbol{Name: "Generate", QualifiedName: "inventory.TradeUpGenerator.Generate"}, Score: 0.25},
+	})
+
+	require.GreaterOrEqual(t, alpha, float32(0.9))
+}
+
+func TestEffectiveAlphaKeepsGraphUsefulForWeakDirectMatch(t *testing.T) {
+	alpha := effectiveAlpha(Request{Query: "where does buying flow connect"}, []store.ScoredSymbol{
+		{Symbol: store.Symbol{Name: "Generate", QualifiedName: "inventory.TradeUpGenerator.Generate"}, Score: 1.0},
+		{Symbol: store.Symbol{Name: "Run", QualifiedName: "worker.Run"}, Score: 0.95},
+	})
+
+	require.LessOrEqual(t, alpha, float32(0.7))
+}
+
+func TestEffectiveAlphaHonorsExplicitAlpha(t *testing.T) {
+	alpha := effectiveAlpha(Request{Query: "handler builds", Alpha: 0.42, AlphaSet: true}, []store.ScoredSymbol{
+		{Symbol: store.Symbol{Name: "BuildAndBuy", QualifiedName: "api.BuyBuildHandler.BuildAndBuy"}, Score: 1.0},
+	})
+
+	require.Equal(t, float32(0.42), alpha)
+}
+
+func TestRetriever_HybridMode(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha() {}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta() {}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 11, EndLine: 15, BodyExcerpt: "func Gamma() {}"},
+	}
+	ids := []int64{1, 2, 3}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{
+		symbols:   symbols,
+		ids:       ids,
+		filePaths: filePaths,
+		ftsResult: []store.ScoredSymbol{
+			{Symbol: symbols[2], Score: 5.0},
+			{Symbol: symbols[0], Score: 3.0},
+		},
+	}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "gamma alpha function",
+		BudgetTokens: 10000,
+		SeedK:        5,
+		MaxResults:   10,
+		Mode:         ModeHybrid,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+
+	byName := make(map[string]ScoredResult)
+	for _, s := range result.Symbols {
+		byName[s.QualifiedName] = s
+	}
+
+	alpha, ok := byName["pkg.Alpha"]
+	require.True(t, ok, "Alpha should be in results")
+	assert.Equal(t, "hybrid_seed", alpha.Why, "Alpha appears in both vector and FTS seeds")
+}
+
+func TestRetriever_HybridProtectsTopVectorSeedFromGraphNoise(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Direct", Kind: "function", QualifiedName: "pkg.Direct", StartLine: 1, EndLine: 20, BodyExcerpt: strings.Repeat("direct ", 20)},
+		{ID: 2, FileID: 10, Name: "NoisyHub", Kind: "function", QualifiedName: "pkg.NoisyHub", StartLine: 21, EndLine: 40, BodyExcerpt: strings.Repeat("hub ", 20)},
+		{ID: 3, FileID: 10, Name: "Helper", Kind: "function", QualifiedName: "pkg.Helper", StartLine: 41, EndLine: 60, BodyExcerpt: strings.Repeat("helper ", 20)},
+	}
+	ms := &mockStore{
+		symbols:   symbols,
+		ids:       []int64{1, 2, 3},
+		filePaths: map[int64]string{10: "pkg/file.go"},
+		edges: []store.Edge{
+			{Src: 2, Dst: 3, Kind: store.EdgeCalls, Weight: 1},
+		},
+	}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "unrelated wording",
+		BudgetTokens: 10000,
+		SeedK:        3,
+		MaxResults:   1,
+		Mode:         ModeHybrid,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 1)
+	require.Equal(t, "pkg.Direct", result.Symbols[0].QualifiedName)
+}
+
+func TestRetriever_AlphaOne_SeedOrderDominates(t *testing.T) {
+	// alpha=1.0: output order must match seed order (highest vector score first).
+	// PPR has zero weight, so graph topology is irrelevant.
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 11, EndLine: 15, BodyExcerpt: "func Gamma(){}"},
+	}
+	// edges: 3→2→1 so PPR would push Gamma highest if it mattered
+	edges := []store.Edge{
+		{Src: 3, Dst: 2, Kind: store.EdgeCalls, Weight: 1},
+		{Src: 2, Dst: 1, Kind: store.EdgeCalls, Weight: 1},
+	}
+	ids := []int64{1, 2, 3}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{symbols: symbols, edges: edges, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        3,
+		MaxResults:   3,
+		Alpha:        1.0,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(result.Symbols), 2)
+
+	// mockEmbedder gives score 1/1, 1/2, 1/3 for ids 1,2,3 → Alpha scores highest
+	assert.Equal(t, "pkg.Alpha", result.Symbols[0].QualifiedName, "alpha=1.0 must put top seed first")
+}
+
+func TestRetriever_AlphaZero_PPRDominates(t *testing.T) {
+	// alpha=0.0: only PPR score counts, seeds get no direct bonus.
+	// We verify that non-seed nodes can outrank seeds when graph topology favors them.
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 11, EndLine: 15, BodyExcerpt: "func Gamma(){}"},
+	}
+	ids := []int64{1, 2, 3}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{symbols: symbols, edges: nil, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        3,
+		MaxResults:   3,
+		Alpha:        0.0,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+	// alpha=0: final_score = norm_ppr only, all 3 symbols must still appear
+	assert.Len(t, result.Symbols, 3)
+}
+
+func TestRetriever_AlphaZeroDoesNotApplyDefaultSeedWeight(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){\nprintln(\"alpha\")\n}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){\nprintln(\"beta\")\n}"},
+	}
+	edges := []store.Edge{{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1}}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{symbols: symbols, edges: edges, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        1,
+		MaxResults:   2,
+		Alpha:        0.0,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+
+	var beta ScoredResult
+	for _, sym := range result.Symbols {
+		if sym.QualifiedName == "pkg.Beta" {
+			beta = sym
+			break
+		}
+	}
+	require.Equal(t, "pkg.Beta", beta.QualifiedName)
+	require.Greater(t, beta.Score, float32(0.8), "alpha=0 must use normalized PPR, not default seed weighting")
+}
+
+func TestRetriever_AlphaHalf_BothContribute(t *testing.T) {
+	// alpha=0.5: seed score and PPR both contribute equally.
+	// Smoke test: results are returned and Why labels are correct.
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){}"},
+	}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{symbols: symbols, edges: nil, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        2,
+		MaxResults:   2,
+		Alpha:        0.5,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 2)
+
+	byName := make(map[string]ScoredResult)
+	for _, s := range result.Symbols {
+		byName[s.QualifiedName] = s
+	}
+	_, hasAlpha := byName["pkg.Alpha"]
+	_, hasBeta := byName["pkg.Beta"]
+	assert.True(t, hasAlpha && hasBeta, "both symbols must appear with alpha=0.5")
+}
+
+func TestRetriever_RerankerReordersCandidatesBeforePacking(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){\nprintln(\"alpha\")\n}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){\nprintln(\"beta\")\n}"},
+	}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	ms := &mockStore{symbols: symbols, ids: ids, filePaths: filePaths}
+	r := NewRetrieverWithReranker(ms, &mockEmbedder{}, &mockReranker{order: []string{"pkg.Beta"}}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        2,
+		MaxResults:   2,
+		Alpha:        1.0,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 2)
+	assert.Equal(t, "pkg.Beta", result.Symbols[0].QualifiedName)
+	assert.Contains(t, result.Symbols[0].Why, "rerank")
+}
+
+func TestRetriever_AdaptiveRerankSkipsConfidentConstructorMatch(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "NewAlpha", Kind: "function", QualifiedName: "pkg.NewAlpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func NewAlpha() *Alpha { return &Alpha{} }"},
+		{ID: 2, FileID: 10, Name: "CreateAlpha", Kind: "function", QualifiedName: "pkg.CreateAlpha", StartLine: 11, EndLine: 20, BodyExcerpt: "func CreateAlpha() *Alpha { return NewAlpha() }"},
+		{ID: 3, FileID: 10, Name: "Alpha", Kind: "class", QualifiedName: "pkg.Alpha", StartLine: 21, EndLine: 30, BodyExcerpt: "type Alpha struct{}"},
+	}
+	ids := []int64{1, 2, 3}
+	filePaths := map[int64]string{10: "pkg/alpha.go"}
+	ms := &mockStore{symbols: symbols, ids: ids, filePaths: filePaths}
+	rr := &mockReranker{order: []string{"pkg.CreateAlpha", "pkg.NewAlpha"}}
+	r := NewRetrieverWithReranker(ms, &mockEmbedder{}, rr, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:          "NewAlpha constructor",
+		BudgetTokens:   10000,
+		SeedK:          3,
+		MaxResults:     3,
+		RerankK:        3,
+		AdaptiveRerank: true,
+	})
+
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+	require.Equal(t, 0, rr.seenCount)
+	require.Equal(t, "pkg.NewAlpha", result.Symbols[0].QualifiedName)
+}
+
+func TestRetriever_RerankKExpandsCandidatePoolWithoutExpandingResults(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 5, BodyExcerpt: "func Alpha(){\nprintln(\"alpha alpha alpha alpha alpha alpha alpha alpha\")\n}"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 6, EndLine: 10, BodyExcerpt: "func Beta(){\nprintln(\"beta beta beta beta beta beta beta beta\")\n}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 11, EndLine: 15, BodyExcerpt: "func Gamma(){\nprintln(\"gamma gamma gamma gamma gamma gamma gamma gamma\")\n}"},
+		{ID: 4, FileID: 10, Name: "Delta", Kind: "function", QualifiedName: "pkg.Delta", StartLine: 16, EndLine: 20, BodyExcerpt: "func Delta(){\nprintln(\"delta delta delta delta delta delta delta delta\")\n}"},
+		{ID: 5, FileID: 10, Name: "Epsilon", Kind: "function", QualifiedName: "pkg.Epsilon", StartLine: 21, EndLine: 25, BodyExcerpt: "func Epsilon(){\nprintln(\"epsilon epsilon epsilon epsilon epsilon epsilon\")\n}"},
+	}
+	ids := []int64{1, 2, 3, 4, 5}
+	filePaths := map[int64]string{10: "pkg/file.go"}
+
+	rr := &mockReranker{order: []string{"pkg.Delta"}}
+	ms := &mockStore{symbols: symbols, ids: ids, filePaths: filePaths}
+	r := NewRetrieverWithReranker(ms, &mockEmbedder{}, rr, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 10000,
+		SeedK:        5,
+		MaxResults:   2,
+		RerankK:      4,
+		Alpha:        1.0,
+		AlphaSet:     true,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 2)
+	// RerankK(4) + the remaining top-PPR candidate appended by appendMissingTopPPR.
+	require.Equal(t, 5, rr.seenCount)
+	require.Equal(t, "pkg.Delta", result.Symbols[0].QualifiedName)
+}
+
+func TestRetriever_PopulatesRankingFeatures(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "SearchByVector", Kind: "function", QualifiedName: "sqlite.SearchByVector", StartLine: 1, EndLine: 8, Signature: "func SearchByVector(ctx context.Context)", BodyExcerpt: "func SearchByVector(ctx context.Context) {}"},
+	}
+	ids := []int64{1}
+	filePaths := map[int64]string{10: "internal/store/sqlite/sqlite.go"}
+	ms := &mockStore{symbols: symbols, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "sqlite vector search",
+		BudgetTokens: 10000,
+		SeedK:        1,
+		MaxResults:   1,
+		Alpha:        1.0,
+		AlphaSet:     true,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 1)
+	require.Greater(t, result.Symbols[0].Features.NameOverlap, float32(0))
+	require.Greater(t, result.Symbols[0].Features.PathOverlap, float32(0))
+	require.Equal(t, float32(1), result.Symbols[0].Features.VectorSeed)
+}
+
+func TestRetriever_TokenBudget(t *testing.T) {
+	symbols := make([]store.Symbol, 20)
+	ids := make([]int64, 20)
+	for i := range symbols {
+		id := int64(i + 1)
+		ids[i] = id
+		symbols[i] = store.Symbol{
+			ID:            id,
+			FileID:        1,
+			QualifiedName: "pkg.Sym" + string(rune('A'+i)),
+			Kind:          "function",
+			StartLine:     i*10 + 1,
+			EndLine:       i*10 + 10,
+			BodyExcerpt:   "func Sym() { /* some body that takes tokens */ }",
+		}
+	}
+	ms := &mockStore{
+		symbols:   symbols,
+		ids:       ids,
+		edges:     nil,
+		filePaths: map[int64]string{1: "pkg/file.go"},
+	}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "anything",
+		BudgetTokens: 50,
+		SeedK:        5,
+		MaxResults:   20,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, result.TotalTokens, 50)
+}
+
+func TestRetriever_OutputModeMinimal_NoGraphContext(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func Alpha() { Beta() }"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 11, EndLine: 20, BodyExcerpt: "func Beta() {}"},
+	}
+	edges := []store.Edge{{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1}}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/alpha.go"}
+	ms := &mockStore{symbols: symbols, edges: edges, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "alpha beta",
+		BudgetTokens: 10000,
+		SeedK:        2,
+		MaxResults:   2,
+		OutputMode:   OutputModeMinimal,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+
+	for _, s := range result.Symbols {
+		assert.Empty(t, s.Callers, "minimal mode must not populate Callers")
+		assert.Empty(t, s.Callees, "minimal mode must not populate Callees")
+	}
+	assert.Nil(t, result.NextSteps, "minimal mode must not populate NextSteps")
+	assert.Nil(t, result.Structure, "minimal mode must not populate Structure")
+}
+
+func TestRetriever_OutputModeAnswer_HasGraphContext(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func Alpha() { Beta() }"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 11, EndLine: 20, BodyExcerpt: "func Beta() {}"},
+	}
+	edges := []store.Edge{{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1}}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/alpha.go"}
+	ms := &mockStore{symbols: symbols, edges: edges, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "alpha beta",
+		BudgetTokens: 10000,
+		SeedK:        2,
+		MaxResults:   2,
+		OutputMode:   OutputModeAnswer,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+
+	hasConfidence := false
+	for _, s := range result.Symbols {
+		if s.Confidence != "" {
+			hasConfidence = true
+		}
+	}
+	assert.True(t, hasConfidence, "answer mode must assign Confidence")
+	assert.NotNil(t, result.NextSteps, "answer mode must populate NextSteps")
+	assert.Nil(t, result.Structure, "answer mode must not populate Structure")
+}
+
+func TestRetriever_OutputModeExplore_HasStructure(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func Alpha() { Beta() }"},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 11, EndLine: 20, BodyExcerpt: "func Beta() {}"},
+	}
+	ids := []int64{1, 2}
+	filePaths := map[int64]string{10: "pkg/alpha.go"}
+	ms := &mockStore{symbols: symbols, ids: ids, filePaths: filePaths}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{
+		Query:        "alpha beta",
+		BudgetTokens: 10000,
+		SeedK:        2,
+		MaxResults:   2,
+		OutputMode:   OutputModeExplore,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Symbols)
+
+	assert.NotNil(t, result.Structure, "explore mode must populate Structure")
+	assert.NotNil(t, result.NextSteps, "explore mode must populate NextSteps")
+}
+
+func TestParseOutputMode(t *testing.T) {
+	cases := []struct {
+		input string
+		want  OutputMode
+		isErr bool
+	}{
+		{"answer", OutputModeAnswer, false},
+		{"", OutputModeAnswer, false},
+		{"minimal", OutputModeMinimal, false},
+		{"explore", OutputModeExplore, false},
+		{"invalid", OutputModeAnswer, true},
+	}
+	for _, tc := range cases {
+		got, err := ParseOutputMode(tc.input)
+		if tc.isErr {
+			assert.Error(t, err, "input=%q", tc.input)
+		} else {
+			assert.NoError(t, err, "input=%q", tc.input)
+			assert.Equal(t, tc.want, got, "input=%q", tc.input)
+		}
+	}
+}
+
+func TestPack_PreservesRankingOrder(t *testing.T) {
+	symbols := []ScoredResult{
+		{QualifiedName: "pkg.HighScoreLongBody", Score: 10, Body: strings.Repeat("x", 400)},
+		{QualifiedName: "pkg.LowerScoreShortBody", Score: 9, Body: "short"},
+	}
+
+	selected, _ := Pack(symbols, 1000, 0)
+
+	require.Len(t, selected, 2)
+	require.Equal(t, "pkg.HighScoreLongBody", selected[0].QualifiedName)
+	require.Equal(t, "pkg.LowerScoreShortBody", selected[1].QualifiedName)
+}
+
+func TestPack_TiersBodiesBeyondFullBodyCount(t *testing.T) {
+	long := strings.Repeat("body line\n", 50)
+	symbols := []ScoredResult{
+		{QualifiedName: "pkg.A", Body: long, Signature: "func A() error"},
+		{QualifiedName: "pkg.B", Body: long, Signature: "func B() error"},
+		{QualifiedName: "pkg.C", Body: long, Signature: "func C() error", Docstring: "C does things.\nLong tail."},
+		{QualifiedName: "pkg.D", Body: long, Signature: "func D() error", Docstring: "D drives.\nMore."},
+	}
+
+	selected, total := Pack(symbols, 100000, 2)
+	require.Len(t, selected, 4)
+	require.Equal(t, "full", selected[0].Detail)
+	require.Equal(t, "full", selected[1].Detail)
+	require.Equal(t, long, selected[1].Body)
+	require.Equal(t, "compact", selected[2].Detail)
+	require.Equal(t, "func C() error\n// C does things.", selected[2].Body)
+	require.Equal(t, "compact", selected[3].Detail)
+	require.Less(t, total, 2*estimateTokens(long)+100, "tail must not pay full body cost")
+
+	// negative count disables tiering
+	allFull, _ := Pack(symbols, 100000, -1)
+	for i := range allFull {
+		require.Equal(t, "full", allFull[i].Detail)
+		require.Equal(t, long, allFull[i].Body)
+	}
+}

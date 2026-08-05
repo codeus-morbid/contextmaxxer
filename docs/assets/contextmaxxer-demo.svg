@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Contextmaxxer terminal search result</title>
+  <desc id="desc">A local query finds retrieve.Pack, its caller, callees and source excerpt in one response.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#020617" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="650" rx="34" fill="#070b14"/>
+  <circle cx="1080" cy="80" r="210" fill="#22d3ee" opacity="0.07"/>
+  <circle cx="90" cy="630" r="240" fill="#8b5cf6" opacity="0.08"/>
+
+  <g filter="url(#shadow)">
+    <rect x="44" y="38" width="1112" height="574" rx="20" fill="url(#panel)" stroke="#334155"/>
+    <path d="M44 96h1112" stroke="#334155"/>
+  </g>
+
+  <circle cx="78" cy="67" r="7" fill="#fb7185"/>
+  <circle cx="102" cy="67" r="7" fill="#fbbf24"/>
+  <circle cx="126" cy="67" r="7" fill="#34d399"/>
+  <text x="600" y="73" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16" text-anchor="middle">contextmaxxer · local code search</text>
+
+  <text x="76" y="132" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">$</text>
+  <text x="100" y="132" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">contextmaxxer query -results 3</text>
+  <text x="76" y="164" fill="#c4b5fd" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">"fit retrieved symbols into the token budget"</text>
+
+  <rect x="70" y="194" width="1060" height="330" rx="14" fill="#0f172a" stroke="#22d3ee" stroke-opacity="0.45"/>
+  <rect x="70" y="194" width="7" height="330" rx="3" fill="#22d3ee"/>
+
+  <text x="98" y="230" fill="#67e8f9" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">[0.9052 · medium]</text>
+  <text x="270" y="230" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">hybrid_seed + rerank + intent</text>
+
+  <text x="98" y="273" fill="#f8fafc" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="25" font-weight="700">retrieve.Pack</text>
+  <text x="98" y="303" fill="#a5b4fc" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">internal/retrieve/packer.go:19–47</text>
+
+  <text x="98" y="350" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="14">CALLER</text>
+  <text x="98" y="377" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">retrieve.runPipeline</text>
+
+  <text x="390" y="350" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="14">CALLEES</text>
+  <text x="390" y="377" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">retrieve.compactBody</text>
+  <text x="390" y="403" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="16">retrieve.estimateTokens</text>
+
+  <path d="M690 325v156" stroke="#334155"/>
+  <text x="725" y="350" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="14">SOURCE EVIDENCE</text>
+  <text x="725" y="382" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">var selected []ScoredResult</text>
+  <text x="725" y="410" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">total := 0</text>
+  <text x="725" y="438" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">for i, s := range symbols {</text>
+  <text x="749" y="466" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">s.Body = compactBody(s)</text>
+
+  <text x="76" y="564" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">3 ranked symbols</text>
+  <circle cx="234" cy="559" r="3" fill="#475569"/>
+  <text x="250" y="564" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">673 tokens</text>
+  <circle cx="361" cy="559" r="3" fill="#475569"/>
+  <text x="377" y="564" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15">local SQLite + ONNX</text>
+  <text x="1128" y="564" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="15" text-anchor="end">no source-file reads</text>
+</svg>

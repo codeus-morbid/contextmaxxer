@@ -1,0 +1,76 @@
+[
+  {
+    "id": "ctx_gh_bert_pair",
+    "query": "encode query and document pairs for a BERT style cross encoder",
+    "expected": ["rerank.buildBERTPairIDs", "rerank.OnnxReranker.encodePair"],
+    "not_expected": ["rerank.buildXLMRobertaPairIDs"],
+    "tags": ["sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_gh_embed_batch",
+    "query": "run a batch of texts through the transformer and normalize the vectors",
+    "expected": ["embed.OnnxEmbedder.embedBatch", "embed.OnnxEmbedder.Embed"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_visibility",
+    "query": "guess whether a symbol is public API or internal",
+    "expected": ["retrieve.visibilityFor", "retrieve.assignVisibility"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_next_steps",
+    "query": "suggest what the agent should do after looking at search results",
+    "expected": ["retrieve.buildNextSteps"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_graph_enrich",
+    "query": "attach callers callees and related tests to each result",
+    "expected": ["retrieve.enrichGraphContext"],
+    "tags": ["multi-hop"]
+  },
+  {
+    "id": "ctx_gh_hub_penalty",
+    "query": "penalize highly connected hub nodes in ranking",
+    "expected": ["retrieve.degreePenalty"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_wilson_ci",
+    "query": "wilson confidence interval for a hit rate",
+    "expected": ["main.wilsonCI"],
+    "tags": ["lexical"]
+  },
+  {
+    "id": "ctx_gh_diag_side_by_side",
+    "query": "print hybrid and vector-only rankings side by side for a failing case",
+    "expected": ["main.printSide", "main.printExpectedFeatures"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_mcp_serve",
+    "query": "expose code search to agents over the MCP protocol",
+    "expected": ["mcp.Server.Serve", "cli.RunMCP"],
+    "tags": ["layer-conflict"]
+  },
+  {
+    "id": "ctx_gh_warm_reindex",
+    "query": "skip unchanged files on reindex using known content hashes",
+    "expected": ["index.Walker.Walk", "index.Walker.SetKnownFiles", "index.hashFile"],
+    "tags": ["multi-hop"]
+  },
+  {
+    "id": "ctx_gh_companions",
+    "query": "list companion files like tests and mocks next to each result",
+    "expected": ["retrieve.enrichCompanionFiles"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_gh_skip_rerank",
+    "query": "adaptively skip the cross encoder when the query is cheap to answer",
+    "expected": ["retrieve.shouldSkipRerank"],
+    "not_expected": ["rerank.OnnxReranker.Rerank"],
+    "tags": ["intent-vs-def"]
+  }
+]

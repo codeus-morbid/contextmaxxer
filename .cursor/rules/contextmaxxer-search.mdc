@@ -1,0 +1,16 @@
+---
+description: Prefer MCP find_context over rg for code search
+alwaysApply: true
+---
+
+# Search policy
+
+- When the task requires finding where something is implemented, how it works, or locating relevant code across the repo, ALWAYS try calling the MCP tool `find_context` first.
+- Only fall back to `rg`/manual searching if:
+  - `find_context` fails (tool error/timeout), or
+  - it returns no relevant matches (top results are clearly unrelated).
+- If you fall back to `rg`, state the reason in one sentence (what `find_context` returned and why it was insufficient).
+
+# Verification
+
+- Prefer checking results in the `find_context` output (top-1/top-3 `name`, `why`, and `confidence`) before opening more files.

@@ -1,0 +1,87 @@
+[
+  {
+    "id": "ctx_h_par_similar_chunks",
+    "category": "paraphrastic",
+    "query": "find similar code chunks by meaning",
+    "expected": ["sqlite.Store.SearchByVectorScored"],
+    "not_expected": ["intent.Ranker.Rank", "intent.tokenCoverage", "intent.score"]
+  },
+  {
+    "id": "ctx_h_par_remember_searches",
+    "category": "paraphrastic",
+    "query": "remember what users have been searching for",
+    "expected": ["feedback.Recorder.RecordRetrieval"],
+    "not_expected": ["retrieve.Retriever.Retrieve", "retrieve.Pack"]
+  },
+  {
+    "id": "ctx_h_par_skip_heavy_model",
+    "category": "paraphrastic",
+    "query": "decide when we can skip the heavy ranking model",
+    "expected": ["retrieve.shouldSkipRerank"],
+    "not_expected": ["rerank.OnnxReranker.Rerank", "intent.Ranker.Rank"]
+  },
+  {
+    "id": "ctx_h_par_avoid_repository_crowdout",
+    "category": "paraphrastic",
+    "query": "make sure graph-only candidates are not pushed out by lexical matches",
+    "expected": ["retrieve.appendMissingTopPPR"],
+    "not_expected": ["retrieve.appendMissingTopVectorSeeds", "retrieve.shouldSkipRerank"]
+  },
+  {
+    "id": "ctx_h_mh_indexing_pipeline",
+    "category": "multi-hop",
+    "query": "indexing pipeline from filesystem walk to embeddings stored in database",
+    "expected": [
+      "index.Walker.Walk",
+      "index.treeSitterParser.Parse",
+      "embed.OnnxEmbedder.Embed",
+      "sqlite.Store.UpsertEmbedding"
+    ],
+    "min_hits": 3
+  },
+  {
+    "id": "ctx_h_mh_mcp_request_flow",
+    "category": "multi-hop",
+    "query": "trace what happens when MCP server receives a search request from an agent",
+    "expected": [
+      "mcp.Server.Serve",
+      "retrieve.Retriever.Retrieve",
+      "retrieve.Pack",
+      "feedback.Recorder.RecordRetrieval"
+    ],
+    "min_hits": 3
+  },
+  {
+    "id": "ctx_h_mh_retrieval_phases",
+    "category": "multi-hop",
+    "query": "phases of a retrieval call: seed, graph propagation, rerank, output enrichment",
+    "expected": [
+      "retrieve.PersonalizedPageRank",
+      "rerank.OnnxReranker.Rerank",
+      "intent.Ranker.Rank",
+      "retrieve.enrichGraphContext"
+    ],
+    "min_hits": 3
+  },
+  {
+    "id": "ctx_h_iv_cross_encoder_reorder",
+    "category": "intent-vs-def",
+    "query": "function that re-orders results using a cross encoder model",
+    "expected": ["rerank.OnnxReranker.Rerank"],
+    "not_expected": ["intent.Ranker.Rank", "retrieve.Retriever.Retrieve", "retrieve.shouldSkipRerank"]
+  },
+  {
+    "id": "ctx_h_iv_graph_random_walk",
+    "category": "intent-vs-def",
+    "query": "scoring nodes in a graph by random walk with restart",
+    "expected": ["retrieve.PersonalizedPageRank"],
+    "not_expected": ["index.Walker.Walk", "intent.Ranker.Rank"]
+  },
+  {
+    "id": "ctx_h_neg_eval_quality",
+    "category": "negative",
+    "query": "compute retrieval quality numbers like recall and mrr across queries",
+    "expected": ["eval.SummarizeDetailed"],
+    "not_expected": ["retrieve.Retriever.Retrieve", "intent.Ranker.Rank"]
+  }
+]

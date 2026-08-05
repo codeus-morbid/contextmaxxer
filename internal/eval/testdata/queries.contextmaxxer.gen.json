@@ -1,0 +1,116 @@
+[
+  {
+    "id": "ctx_g_model_download",
+    "query": "download model files with a progress indicator on first run",
+    "expected": ["embed.downloadFileWithProgress", "embed.ensureModelFiles"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_overlap_tokenize",
+    "query": "split the user query into tokens for lexical overlap scoring",
+    "expected": ["retrieve.tokenizeForOverlap", "retrieve.splitCamelForOverlap"],
+    "not_expected": ["intent.tokenize"],
+    "tags": ["sibling-ambiguous", "cross-package-twin"]
+  },
+  {
+    "id": "ctx_g_alpha_balance",
+    "query": "decide how much weight the graph gets versus direct vector matches",
+    "expected": ["retrieve.effectiveAlpha"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_token_budget_pack",
+    "query": "fit retrieved symbols into the token budget",
+    "expected": ["retrieve.Pack"],
+    "tags": ["action-lookup"]
+  },
+  {
+    "id": "ctx_g_embedding_text",
+    "query": "build the text that gets embedded for each code symbol",
+    "expected": ["index.EmbeddingText"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_walker_walk",
+    "query": "walk repository files skipping tests and hashing contents",
+    "expected": ["index.Walker.Walk", "index.hashFile"],
+    "tags": ["action-lookup"]
+  },
+  {
+    "id": "ctx_g_go_symbols",
+    "query": "extract symbols from a parsed Go source file",
+    "expected": ["languages.goExtractor.Symbols"],
+    "not_expected": ["languages.tsExtractor.Symbols", "languages.pyExtractor.Symbols"],
+    "tags": ["cross-language", "sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_g_py_edges",
+    "query": "extract call edges from Python code blocks",
+    "expected": ["languages.pyExtractor.Edges", "languages.pyExtractEdgesFromBlock", "languages.pyExtractCallsInFunc"],
+    "not_expected": ["languages.tsExtractEdgesFromBlock", "languages.goExtractor.Edges"],
+    "tags": ["cross-language", "sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_g_sqlite_open",
+    "query": "open or create the sqlite index database",
+    "expected": ["sqlite.New"],
+    "tags": ["constructor"]
+  },
+  {
+    "id": "ctx_g_embedding_upsert_batch",
+    "query": "store a batch of vector embeddings",
+    "expected": ["sqlite.Store.UpsertEmbeddingBatch", "sqlite.Store.UpsertEmbedding"],
+    "tags": ["sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_g_fts_bm25",
+    "query": "full text search over symbols ranked by bm25",
+    "expected": ["sqlite.Store.SearchByText"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_fts_preprocess",
+    "query": "turn a natural language query into an FTS match expression",
+    "expected": ["sqlite.preprocessFTSQuery", "sqlite.tokenizeFTS"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_ppr_propagate",
+    "query": "spread seed scores through the call graph",
+    "expected": ["retrieve.PersonalizedPageRank"],
+    "not_expected": ["index.Walker.Walk"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_retriever_ctor",
+    "query": "construct a retriever wired with reranker and intent ranker",
+    "expected": ["retrieve.NewRetrieverWithRankers", "retrieve.NewRetrieverWithReranker"],
+    "not_expected": ["retrieve.Retriever"],
+    "tags": ["constructor", "sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_g_rerank_doc_truncate",
+    "query": "cap the length of the document text fed to the reranker",
+    "expected": ["rerank.truncateBody", "rerank.candidateText"],
+    "tags": ["sibling-ambiguous"]
+  },
+  {
+    "id": "ctx_g_language_dispatch",
+    "query": "pick the right language extractor for a source file",
+    "expected": ["languages.New", "index.treeSitterParser.Parse"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_feedback_record",
+    "query": "log which symbols were returned for a query so we can analyze quality later",
+    "expected": ["feedback.Recorder.RecordRetrieval"],
+    "not_expected": ["retrieve.Retriever.Retrieve"],
+    "tags": ["paraphrastic"]
+  },
+  {
+    "id": "ctx_g_confidence_tier",
+    "query": "assign a confidence tier to each returned symbol",
+    "expected": ["retrieve.assignConfidence", "retrieve.buildRetrievalHealth"],
+    "tags": ["sibling-ambiguous"]
+  }
+]
