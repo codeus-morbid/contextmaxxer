@@ -237,6 +237,15 @@ var testInfraSegments = map[string]struct{}{
 	"test": {}, "tests": {}, "testdata": {}, "testutil": {}, "testutils": {},
 	"mock": {}, "mocks": {}, "fixtures": {}, "e2e": {},
 	"bench": {}, "benchmarks": {},
+	// Simulation and load-harness trees. Measured on cockroach: 2 of 5
+	// production questions returned simulator code at rank 1 —
+	// asim/queue.splitQueue.shouldSplit for "where is a range split by load"
+	// (the real one is pkg/kv/kvserver/replica_split_load.go) and
+	// storerebalancer.simulatorReplica.AdminTransferLease for "transfer the
+	// lease" (really pkg/kv/kvserver/replica_range_lease.go:952). These trees
+	// mirror production APIs symbol-for-symbol, so semantics alone cannot
+	// separate them; only the path can.
+	"asim": {}, "simulation": {}, "simulator": {}, "roachtest": {},
 }
 
 func isTestInfraPath(file string) bool {
@@ -257,7 +266,8 @@ func isTestInfraPath(file string) bool {
 }
 
 func queryWantsTestInfra(tokens map[string]struct{}) bool {
-	return hasAny(tokens, "test", "tests", "mock", "mocks", "fixture", "bench", "benchmark", "e2e", "spec", "coverage")
+	return hasAny(tokens, "test", "tests", "mock", "mocks", "fixture", "bench", "benchmark",
+		"e2e", "spec", "coverage", "simulation", "simulator", "simulate", "asim", "roachtest")
 }
 
 func candidateTokenSet(c retrieve.ScoredResult) map[string]struct{} {

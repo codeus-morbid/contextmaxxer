@@ -224,3 +224,24 @@ func TestRankerUsesFieldFeaturesForSiblingDisambiguation(t *testing.T) {
 
 	require.Equal(t, "handler.EmployeeHandler.GetEmployees", got[0].QualifiedName)
 }
+
+// Simulation trees mirror production APIs symbol-for-symbol, so semantics
+// alone cannot separate them — only the path can. Measured on cockroach:
+// asim/ and the store-rebalancer simulator took rank 1 from the real
+// implementations on 2 of 5 production questions.
+func TestRankerDemotesSimulationTreesUnlessQueryAsks(t *testing.T) {
+	ranker := NewRanker()
+	items := []retrieve.ScoredResult{
+		{File: "pkg/kv/kvserver/asim/queue/split_queue.go", QualifiedName: "queue.splitQueue.shouldSplit", Kind: "method", Score: 0.91},
+		{File: "pkg/kv/kvserver/replica_split_load.go", QualifiedName: "kvserver.replicaSplitConfig.NewLoadBasedSplitter", Kind: "method", Score: 0.90},
+	}
+
+	got := ranker.Rank("where is the decision made to split a range based on load", items)
+	require.Equal(t, "kvserver.replicaSplitConfig.NewLoadBasedSplitter", got[0].QualifiedName,
+		"production code must outrank the simulator for a production question")
+
+	// The demotion must lift when the query is explicitly about the simulator.
+	got = ranker.Rank("how does the asim simulation decide to split a range", items)
+	require.Equal(t, "queue.splitQueue.shouldSplit", got[0].QualifiedName,
+		"a query naming the simulation must still reach it")
+}
