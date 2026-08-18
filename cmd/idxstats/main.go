@@ -23,7 +23,34 @@ func main() {
 			continue
 		}
 		fmt.Printf("%-60s symbols=%-8d edges=%-8d (edges/sym=%.2f)\n", path, s, e, ratio(e, s))
+		if t, err := truncation(path); err == nil {
+			fmt.Printf("%-60s truncated=%-8d (%.1f%% of symbols)  visible=%dKB hidden=%dKB (%.1f%% of their code unsearchable)\n",
+				"", t.n, 100*ratio(t.n, s), t.visible/1024, t.hidden/1024,
+				100*ratio(t.hidden, t.visible+t.hidden))
+		}
 	}
+}
+
+// truncStats measures how much symbol code never reaches the retrieval
+// channels: vector, FTS and rerank all read body_excerpt, which the extractor
+// caps (bodyExcerptLimit). symbol_bodies holds the full body for exactly the
+// symbols that were capped, so the delta is the unsearchable remainder.
+type truncStats struct{ n, visible, hidden int }
+
+func truncation(path string) (truncStats, error) {
+	var t truncStats
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return t, err
+	}
+	defer db.Close()
+	err = db.QueryRow(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(LENGTH(s.body_excerpt)), 0),
+		       COALESCE(SUM(LENGTH(b.body) - LENGTH(s.body_excerpt)), 0)
+		FROM symbol_bodies b JOIN symbols s ON s.id = b.symbol_id`,
+	).Scan(&t.n, &t.visible, &t.hidden)
+	return t, err
 }
 
 func ratio(e, s int) float64 {
