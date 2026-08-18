@@ -26,6 +26,8 @@ type graphMemoData struct {
 	byID        map[int64]store.Symbol
 	callerByID  map[int64][]int64
 	calleeByID  map[int64][]int64
+	callerEdges map[int64][]store.Edge
+	calleeEdges map[int64][]store.Edge
 	filePaths   map[int64]string
 	testEntries []testEntry
 }
@@ -60,12 +62,14 @@ func (r *Retriever) getGraphMemo(ctx context.Context) (*graphMemoData, error) {
 	}
 
 	m := &graphMemoData{
-		syms:       syms,
-		edges:      edges,
-		byQN:       make(map[string]store.Symbol, len(syms)),
-		byID:       make(map[int64]store.Symbol, len(syms)),
-		callerByID: make(map[int64][]int64),
-		calleeByID: make(map[int64][]int64),
+		syms:        syms,
+		edges:       edges,
+		byQN:        make(map[string]store.Symbol, len(syms)),
+		byID:        make(map[int64]store.Symbol, len(syms)),
+		callerByID:  make(map[int64][]int64),
+		calleeByID:  make(map[int64][]int64),
+		callerEdges: make(map[int64][]store.Edge),
+		calleeEdges: make(map[int64][]store.Edge),
 	}
 	for _, sym := range syms {
 		m.byQN[sym.QualifiedName] = sym
@@ -74,6 +78,8 @@ func (r *Retriever) getGraphMemo(ctx context.Context) (*graphMemoData, error) {
 	for _, e := range edges {
 		m.callerByID[e.Dst] = append(m.callerByID[e.Dst], e.Src)
 		m.calleeByID[e.Src] = append(m.calleeByID[e.Src], e.Dst)
+		m.callerEdges[e.Dst] = append(m.callerEdges[e.Dst], e)
+		m.calleeEdges[e.Src] = append(m.calleeEdges[e.Src], e)
 	}
 
 	fileIDs := make(map[int64]bool, len(syms)/8)

@@ -51,9 +51,17 @@ type SymbolRef struct {
 	// symbol calls it; for a caller, where that caller calls the result symbol.
 	// 0 when not located. Lets the agent follow a call chain without opening files.
 	CallLine int
+	// PathStatus is "static_unverified" for call-graph edges. Extractors prove
+	// that the call exists in source, not that its surrounding branch executes.
+	PathStatus string
+	// CallSite is a bounded, line-numbered source window around CallLine. It is
+	// populated for top-result graph refs so agents can inspect nearby branch or
+	// dispatch conditions without paying for every related symbol body.
+	CallSite string
 }
 
 type ScoredResult struct {
+	SymbolID      int64
 	File          string
 	QualifiedName string
 	Kind          string
@@ -75,13 +83,17 @@ type ScoredResult struct {
 	Relevance float32
 
 	// Detail marks how much of the symbol the packed Body carries:
-	// "full" (complete body excerpt) or "compact" (signature + doc line).
+	// "full" (complete indexed body), "excerpt" (a query-relevant source
+	// window), or "compact" (signature + doc line).
 	Detail string
 
 	// BodyStartLine is the real file line number of the first line of Body. It
 	// equals StartLine unless an evidence-span trim moved the body window down,
 	// in which case it lets the output number the trimmed lines correctly.
 	BodyStartLine int
+	// BodyEndLine is the real file line number of the last visible Body line.
+	// It differs from EndLine when Detail is "excerpt".
+	BodyEndLine int
 
 	Confidence string
 	Callers    []SymbolRef
@@ -163,6 +175,7 @@ type Store interface {
 	SearchByVectorScored(ctx context.Context, vec []float32, k int) ([]store.ScoredSymbol, error)
 	SearchByText(ctx context.Context, query string, k int) ([]store.ScoredSymbol, error)
 	GetSymbolsByIDs(ctx context.Context, ids []int64) ([]store.Symbol, error)
+	GetSymbolBody(ctx context.Context, symbolID int64) (store.SymbolBody, error)
 	GetFilesByIDs(ctx context.Context, ids []int64) (map[int64]string, error)
 	ListAllSymbolIDs(ctx context.Context) ([]int64, error)
 	ListSymbolMeta(ctx context.Context) ([]store.Symbol, error)
@@ -227,13 +240,17 @@ type Request struct {
 	// FullBodyResults caps how many top results keep their full body in the
 	// packed response (0 = default 3, negative = all results keep bodies).
 	FullBodyResults int
-	Mode            Mode
-	OutputMode      OutputMode
-	Alpha           float32
-	AlphaSet        bool
-	IncludeTrivial  bool
-	SkipRerank      bool
-	SkipIntent      bool
+	// PreserveFullBodies disables query-relevant evidence trimming. Serving
+	// paths set it only for an explicit full_bodies compatibility override;
+	// normal navigation uses excerpts and expand_context for exact hydration.
+	PreserveFullBodies bool
+	Mode               Mode
+	OutputMode         OutputMode
+	Alpha              float32
+	AlphaSet           bool
+	IncludeTrivial     bool
+	SkipRerank         bool
+	SkipIntent         bool
 }
 
 type Stats struct {
@@ -294,8 +311,17 @@ type Result struct {
 	Structure       *StructureView
 	NextSteps       *NextStepsHints
 	RetrievalHealth *RetrievalHealth
+	// ExpansionSymbols is an internal snapshot of the selected ranked symbols
+	// before tiering and evidence trimming. MCP caches it by request_id so
+	// expand_context can hydrate an already-found symbol without rerunning
+	// embedding, graph ranking, or reranking.
+	ExpansionSymbols []ScoredResult
 }
 
 func (r *Retriever) Retrieve(ctx context.Context, req Request) (Result, error) {
 	return runPipeline(ctx, r, req)
+}
+
+func (r *Retriever) GetSymbolBody(ctx context.Context, symbolID int64) (store.SymbolBody, error) {
+	return r.store.GetSymbolBody(ctx, symbolID)
 }

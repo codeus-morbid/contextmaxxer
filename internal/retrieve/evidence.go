@@ -24,6 +24,7 @@ const (
 func applyEvidenceSpans(ctx context.Context, r *Retriever, qvec []float32, results []ScoredResult) {
 	for i := range results {
 		results[i].BodyStartLine = results[i].StartLine
+		results[i].BodyEndLine = results[i].EndLine
 	}
 	if r.embedder == nil || len(qvec) == 0 {
 		return
@@ -91,37 +92,9 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, qvec []float32, resul
 		}
 		res.Body = strings.Join(lines[spanStart:spanEnd], "\n")
 		res.BodyStartLine = res.StartLine + spanStart
+		res.BodyEndLine = res.StartLine + spanEnd - 1
+		res.Detail = "excerpt"
 	}
-}
-
-// shortName returns the unqualified symbol name (the last dotted segment when
-// Name is empty), used to locate call sites by `name(` in a body.
-func shortName(name, qualified string) string {
-	if name != "" {
-		return name
-	}
-	if i := strings.LastIndex(qualified, "."); i >= 0 {
-		return qualified[i+1:]
-	}
-	return qualified
-}
-
-// callSiteLine finds the first line of ownerBody (which starts at file line
-// ownerStart) that invokes calleeShort — i.e. contains `calleeShort(` — and
-// returns its real file line, or 0 if not found. A cheap query-time
-// approximation of the call-site location so the agent can follow a call chain
-// without opening the file. Reads the indexed body, not the trimmed span.
-func callSiteLine(ownerBody string, ownerStart int, calleeShort string) int {
-	if calleeShort == "" || ownerBody == "" {
-		return 0
-	}
-	needle := calleeShort + "("
-	for i, line := range strings.Split(ownerBody, "\n") {
-		if strings.Contains(line, needle) {
-			return ownerStart + i
-		}
-	}
-	return 0
 }
 
 // evidenceDot is the dot product of two embedding vectors. Embeddings are

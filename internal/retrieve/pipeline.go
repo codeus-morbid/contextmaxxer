@@ -368,6 +368,7 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		}
 
 		scored = append(scored, ScoredResult{
+			SymbolID:      s.ID,
 			File:          filePaths[s.FileID],
 			QualifiedName: s.QualifiedName,
 			Kind:          s.Kind,
@@ -443,14 +444,31 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	}
 
 	tPack := time.Now()
-	selected, totalTokens := Pack(scored, req.BudgetTokens, req.FullBodyResults)
+	selected, _ := Pack(scored, req.BudgetTokens, req.FullBodyResults)
 	stats.PackDuration = time.Since(tPack)
+	expansionSymbols := append([]ScoredResult(nil), scored[:len(selected)]...)
+	for i := range expansionSymbols {
+		expansionSymbols[i].Detail = "full"
+		expansionSymbols[i].BodyStartLine = expansionSymbols[i].StartLine
+		expansionSymbols[i].BodyEndLine = expansionSymbols[i].EndLine
+	}
 
 	// Trim long full-body results to their most query-relevant span before the
 	// response is built (keeps the answer, drops the bulk of large functions).
 	tEv := time.Now()
-	applyEvidenceSpans(ctx, r, qvec, selected)
+	if !req.PreserveFullBodies {
+		applyEvidenceSpans(ctx, r, qvec, selected)
+	} else {
+		for i := range selected {
+			selected[i].BodyStartLine = selected[i].StartLine
+			selected[i].BodyEndLine = selected[i].EndLine
+		}
+	}
 	stats.EvidenceDuration = time.Since(tEv)
+	totalTokens := 0
+	for _, sr := range selected {
+		totalTokens += estimateTokens(sr.Body)
+	}
 
 	assignConfidence(selected)
 	assignVisibility(selected)
@@ -465,9 +483,10 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	}
 
 	result := Result{
-		Symbols:     selected,
-		TotalTokens: totalTokens,
-		Stats:       stats,
+		Symbols:          selected,
+		TotalTokens:      totalTokens,
+		Stats:            stats,
+		ExpansionSymbols: expansionSymbols,
 	}
 
 	if req.OutputMode != OutputModeMinimal {
@@ -525,14 +544,9 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 	allFilePaths := memo.filePaths
 	callerMapByID := memo.callerByID
 	calleeMapByID := memo.calleeByID
+	callerEdgesByID := memo.callerEdges
+	calleeEdgesByID := memo.calleeEdges
 	testEntries := memo.testEntries
-
-	scoredIDSet := make(map[int64]string, len(scored))
-	for _, sr := range scored {
-		if sym, ok := allSymsByQN[sr.QualifiedName]; ok {
-			scoredIDSet[sym.ID] = sr.QualifiedName
-		}
-	}
 
 	symToRef := func(id int64) (SymbolRef, bool) {
 		sym, ok := allSymsByID[id]
@@ -547,78 +561,81 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 		}, true
 	}
 
-	const maxGraphRefs = 3
+	const (
+		maxCallerRefs = 3
+		maxCalleeRefs = 5
+	)
+	const staticUnverified = "static_unverified"
 
-	// Call-site annotation needs real bodies for the scored symbols and the
-	// callers we will show — a few dozen rows, fetched in one go.
-	bodyIDs := make(map[int64]bool, len(scored)*(maxGraphRefs+1))
-	for id := range scoredIDSet {
-		bodyIDs[id] = true
-		ids := callerMapByID[id]
-		if len(ids) > maxGraphRefs {
-			ids = ids[:maxGraphRefs]
+	// DECISION(2026-08): call edges are path-insensitive. Mark every graph ref as
+	// unverified; hydrate conditional callee windows for every returned result and
+	// caller windows only for the top result. Five callees retain nearby switch
+	// alternatives after helper calls without making the whole graph tail verbose.
+	// ASSUMES: a five-line window identifies common branch/dispatch syntax.
+	// REVISIT IF: branch mistakes persist or graph-context lookups become measurable.
+	bodyCache := make(map[int64]store.SymbolBody)
+	callSiteFor := func(symbolID int64, callLine int) string {
+		if callLine <= 0 {
+			return ""
 		}
-		for _, cid := range ids {
-			bodyIDs[cid] = true
+		body, ok := bodyCache[symbolID]
+		if !ok {
+			var bodyErr error
+			body, bodyErr = r.store.GetSymbolBody(ctx, symbolID)
+			if bodyErr != nil {
+				return ""
+			}
+			bodyCache[symbolID] = body
 		}
-	}
-	bodyIDList := make([]int64, 0, len(bodyIDs))
-	for id := range bodyIDs {
-		bodyIDList = append(bodyIDList, id)
-	}
-	bodySyms, err := r.store.GetSymbolsByIDs(ctx, bodyIDList)
-	if err != nil {
-		return fmt.Errorf("get bodies for call-site annotation: %w", err)
-	}
-	bodyByID := make(map[int64]string, len(bodySyms))
-	for _, sym := range bodySyms {
-		bodyByID[sym.ID] = sym.BodyExcerpt
+		sym, ok := allSymsByID[symbolID]
+		if !ok {
+			return ""
+		}
+		return callSiteEvidence(body.Body, sym.StartLine, callLine)
 	}
 
+	// Call-site lines are captured by the AST extractors and stored on edges;
+	// only the top result hydrates bounded source windows around those lines.
 	for i := range scored {
 		qn := scored[i].QualifiedName
 		ownerSym, ownerOK := allSymsByQN[qn]
 
-		var callerIDs []int64
+		var callerEdges []store.Edge
 		if ownerOK {
-			callerIDs = callerMapByID[ownerSym.ID]
+			callerEdges = callerEdgesByID[ownerSym.ID]
 		}
-		if len(callerIDs) > maxGraphRefs {
-			callerIDs = callerIDs[:maxGraphRefs]
+		if len(callerEdges) > maxCallerRefs {
+			callerEdges = callerEdges[:maxCallerRefs]
 		}
-		for _, id := range callerIDs {
-			if ref, ok := symToRef(id); ok {
-				// Where this caller calls the result symbol (in the caller's body).
-				if ownerOK {
-					if caller, ok2 := allSymsByID[id]; ok2 {
-						ref.CallLine = callSiteLine(bodyByID[id], caller.StartLine, shortName(ownerSym.Name, ownerSym.QualifiedName))
-					}
+		for _, edge := range callerEdges {
+			if ref, ok := symToRef(edge.Src); ok {
+				ref.CallLine = edge.CallLine
+				ref.PathStatus = staticUnverified
+				if i == 0 {
+					ref.CallSite = callSiteFor(edge.Src, edge.CallLine)
 				}
 				scored[i].Callers = append(scored[i].Callers, ref)
 			}
 		}
 
-		var calleeIDs []int64
+		var calleeEdges []store.Edge
 		if ownerOK {
-			calleeIDs = calleeMapByID[ownerSym.ID]
+			calleeEdges = calleeEdgesByID[ownerSym.ID]
 		}
-		if len(calleeIDs) > maxGraphRefs {
-			calleeIDs = calleeIDs[:maxGraphRefs]
+		if len(calleeEdges) > maxCalleeRefs {
+			calleeEdges = calleeEdges[:maxCalleeRefs]
 		}
-		for _, id := range calleeIDs {
-			if ref, ok := symToRef(id); ok {
+		for _, edge := range calleeEdges {
+			if ref, ok := symToRef(edge.Dst); ok {
 				// A call edge to a non-callable is always a suffix-collision
 				// artifact (seen live: `defer release()` linked to a same-named
 				// const in an unrelated package). Never show it to the agent.
 				if !callableKind(ref.Kind) {
 					continue
 				}
-				// Where the result symbol calls this callee (in the result's body).
-				if ownerOK {
-					if callee, ok2 := allSymsByID[id]; ok2 {
-						ref.CallLine = callSiteLine(bodyByID[ownerSym.ID], ownerSym.StartLine, shortName(callee.Name, callee.QualifiedName))
-					}
-				}
+				ref.CallLine = edge.CallLine
+				ref.PathStatus = staticUnverified
+				ref.CallSite = callSiteFor(edge.Src, edge.CallLine)
 				scored[i].Callees = append(scored[i].Callees, ref)
 			}
 		}
@@ -785,6 +802,66 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 	}
 
 	return nil
+}
+
+func callSiteEvidence(body string, symbolStartLine, callLine int) string {
+	const (
+		linesBefore  = 3
+		linesAfter   = 1
+		maxLineRunes = 120
+	)
+	if body == "" || symbolStartLine <= 0 || callLine < symbolStartLine {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	callIndex := callLine - symbolStartLine
+	if callIndex < 0 || callIndex >= len(lines) {
+		return ""
+	}
+	start := callIndex - linesBefore
+	if start < 0 {
+		start = 0
+	}
+	end := callIndex + linesAfter
+	if end >= len(lines) {
+		end = len(lines) - 1
+	}
+	branchSensitive := false
+	for i := start; i <= callIndex; i++ {
+		if branchControlLine(strings.TrimSpace(lines[i])) {
+			branchSensitive = true
+			break
+		}
+	}
+	if !branchSensitive {
+		return ""
+	}
+	parts := make([]string, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		line := strings.TrimSpace(strings.TrimSuffix(lines[i], "\r"))
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > maxLineRunes {
+			line = string(runes[:maxLineRunes]) + "…"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", symbolStartLine+i, line))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func branchControlLine(line string) bool {
+	line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+	for _, prefix := range []string{
+		"if ", "if(", "if (", "else", "switch ", "switch(", "switch (",
+		"case ", "case:", "default:", "select ", "match ", "when ",
+	} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // callableKind reports whether a symbol kind can meaningfully be the target

@@ -45,6 +45,20 @@ func (m *mockStore) GetSymbolsByIDs(_ context.Context, ids []int64) ([]store.Sym
 	return out, nil
 }
 
+func (m *mockStore) GetSymbolBody(_ context.Context, symbolID int64) (store.SymbolBody, error) {
+	for _, symbol := range m.symbols {
+		if symbol.ID != symbolID {
+			continue
+		}
+		body := symbol.BodyExcerpt
+		if symbol.FullBody != "" {
+			body = symbol.FullBody
+		}
+		return store.SymbolBody{SymbolID: symbolID, Body: body, SHA256: "test"}, nil
+	}
+	return store.SymbolBody{}, store.ErrNotFound
+}
+
 func (m *mockStore) GetFilesByIDs(_ context.Context, ids []int64) (map[int64]string, error) {
 	result := make(map[int64]string, len(ids))
 	for _, id := range ids {
@@ -200,6 +214,34 @@ func TestRetriever_BasicFlow(t *testing.T) {
 	assert.Greater(t, result.TotalTokens, 0)
 	assert.Greater(t, result.Stats.PPRIterations, 0)
 	assert.Equal(t, 5, result.Stats.GraphNodes)
+}
+
+func TestRetriever_KeepsFullExpansionSnapshotBeforeEvidenceTrim(t *testing.T) {
+	body := strings.Repeat("line\n", 39) + "line"
+	ms := &mockStore{
+		symbols:   []store.Symbol{{ID: 1, FileID: 10, Name: "Long", Kind: "function", QualifiedName: "pkg.Long", StartLine: 100, EndLine: 139, BodyExcerpt: body}},
+		ids:       []int64{1},
+		filePaths: map[int64]string{10: "pkg/long.go"},
+	}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+
+	result, err := r.Retrieve(context.Background(), Request{Query: "long function", BudgetTokens: 10000, SeedK: 1, MaxResults: 1})
+	require.NoError(t, err)
+	require.Len(t, result.Symbols, 1)
+	require.Len(t, result.ExpansionSymbols, 1)
+	assert.Equal(t, "excerpt", result.Symbols[0].Detail)
+	assert.NotEqual(t, body, result.Symbols[0].Body)
+	assert.Equal(t, "full", result.ExpansionSymbols[0].Detail)
+	assert.Equal(t, body, result.ExpansionSymbols[0].Body)
+
+	full, err := r.Retrieve(context.Background(), Request{
+		Query: "long function", BudgetTokens: 10000, SeedK: 1, MaxResults: 1,
+		FullBodyResults: 1, PreserveFullBodies: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, full.Symbols, 1)
+	assert.Equal(t, "full", full.Symbols[0].Detail)
+	assert.Equal(t, body, full.Symbols[0].Body)
 }
 
 func TestRRF_KnownInputs(t *testing.T) {
@@ -665,6 +707,59 @@ func TestRetriever_OutputModeAnswer_HasGraphContext(t *testing.T) {
 	assert.Nil(t, result.Structure, "answer mode must not populate Structure")
 }
 
+func TestEnrichGraphContextMarksStaticEdgesAndIncludesTopCallSites(t *testing.T) {
+	alphaBody := strings.Join([]string{
+		"func Alpha(format int) {",
+		"Prepare()",
+		"Validate()",
+		"switch format {",
+		"case batchResponse:",
+		"Beta()",
+		"case columnarResponse:",
+		"Gamma()",
+		"}",
+		"}",
+	}, "\n")
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 10, EndLine: 19, BodyExcerpt: "func Alpha", FullBody: alphaBody},
+		{ID: 2, FileID: 10, Name: "Beta", Kind: "function", QualifiedName: "pkg.Beta", StartLine: 20, EndLine: 20, BodyExcerpt: "func Beta() {}"},
+		{ID: 3, FileID: 10, Name: "Gamma", Kind: "function", QualifiedName: "pkg.Gamma", StartLine: 30, EndLine: 30, BodyExcerpt: "func Gamma() {}"},
+		{ID: 4, FileID: 10, Name: "Prepare", Kind: "function", QualifiedName: "pkg.Prepare", StartLine: 40, EndLine: 40, BodyExcerpt: "func Prepare() {}"},
+		{ID: 5, FileID: 10, Name: "Validate", Kind: "function", QualifiedName: "pkg.Validate", StartLine: 50, EndLine: 50, BodyExcerpt: "func Validate() {}"},
+	}
+	ms := &mockStore{
+		symbols: symbols,
+		edges: []store.Edge{
+			{Src: 1, Dst: 4, Kind: store.EdgeCalls, Weight: 1, CallLine: 11},
+			{Src: 1, Dst: 5, Kind: store.EdgeCalls, Weight: 1, CallLine: 12},
+			{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1, CallLine: 15},
+			{Src: 1, Dst: 3, Kind: store.EdgeCalls, Weight: 1, CallLine: 17},
+		},
+		ids:       []int64{1, 2, 3, 4, 5},
+		filePaths: map[int64]string{10: "pkg/alpha.go"},
+	}
+	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
+	scored := []ScoredResult{
+		{SymbolID: 2, QualifiedName: "pkg.Beta"},
+		{SymbolID: 1, QualifiedName: "pkg.Alpha"},
+	}
+
+	require.NoError(t, enrichGraphContext(context.Background(), r, Request{}, scored, ms.filePaths))
+	require.Len(t, scored[0].Callers, 1)
+	assert.Equal(t, "static_unverified", scored[0].Callers[0].PathStatus)
+	assert.Contains(t, scored[0].Callers[0].CallSite, "14 case batchResponse:")
+	assert.Contains(t, scored[0].Callers[0].CallSite, "15 Beta()")
+	require.Len(t, scored[1].Callees, 4, "callee limit must retain both branch alternatives after helper calls")
+	assert.Empty(t, scored[1].Callees[0].CallSite, "unconditional helpers should not add evidence payload")
+	assert.Empty(t, scored[1].Callees[1].CallSite, "unconditional helpers should not add evidence payload")
+	assert.Equal(t, "static_unverified", scored[1].Callees[2].PathStatus)
+	assert.Contains(t, scored[1].Callees[2].CallSite, "14 case batchResponse:")
+	assert.Contains(t, scored[1].Callees[2].CallSite, "15 Beta()")
+	assert.Equal(t, "static_unverified", scored[1].Callees[3].PathStatus)
+	assert.Contains(t, scored[1].Callees[3].CallSite, "16 case columnarResponse:")
+	assert.Contains(t, scored[1].Callees[3].CallSite, "17 Gamma()")
+}
+
 func TestRetriever_OutputModeExplore_HasStructure(t *testing.T) {
 	symbols := []store.Symbol{
 		{ID: 1, FileID: 10, Name: "Alpha", Kind: "function", QualifiedName: "pkg.Alpha", StartLine: 1, EndLine: 10, BodyExcerpt: "func Alpha() { Beta() }"},
@@ -750,4 +845,23 @@ func TestPack_TiersBodiesBeyondFullBodyCount(t *testing.T) {
 		require.Equal(t, "full", allFull[i].Detail)
 		require.Equal(t, long, allFull[i].Body)
 	}
+}
+
+func TestApplyEvidenceSpansMarksVisibleExcerpt(t *testing.T) {
+	body := strings.Repeat("line\n", 39) + "line"
+	results := []ScoredResult{{
+		QualifiedName: "pkg.Long",
+		StartLine:     100,
+		EndLine:       139,
+		Body:          body,
+		Detail:        "full",
+	}}
+	r := &Retriever{embedder: &mockEmbedder{}}
+
+	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+
+	require.Equal(t, "excerpt", results[0].Detail)
+	require.Equal(t, 100, results[0].BodyStartLine)
+	require.Equal(t, 112, results[0].BodyEndLine)
+	require.Len(t, strings.Split(results[0].Body, "\n"), 13)
 }

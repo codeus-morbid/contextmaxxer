@@ -2,9 +2,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/feedback"
 	"github.com/codeus-morbid/contextmaxxer/internal/retrieve"
@@ -18,6 +22,117 @@ func TestNewServer_Constructs(t *testing.T) {
 	var r *retrieve.Retriever
 	srv := NewServer(r, slog.Default())
 	assert.NotNil(t, srv)
+}
+
+func TestFindContextToolContractPreservesCompactDefaults(t *testing.T) {
+	for _, fragment := range []string{
+		"Compact tail results retain graph context",
+		"static candidates, not proof",
+		"path_status=static_unverified",
+		"Verify the branch, feature flag, protocol, or dispatch discriminator",
+		"call expand_context",
+		"call continue_context",
+		"until status:complete",
+		"without rerunning semantic search",
+	} {
+		assert.True(t, strings.Contains(findContextToolDescription, fragment), "tool description missing %q", fragment)
+	}
+	assert.NotContains(t, findContextToolDescription, "full_bodies")
+}
+
+func TestCachedRankReturnsOneRank(t *testing.T) {
+	srv := NewServer(nil, slog.Default())
+	srv.cacheExpansion("req-1", []retrieve.ScoredResult{
+		{QualifiedName: "pkg.A", StartLine: 10, EndLine: 20, Body: "func A() {}"},
+		{QualifiedName: "pkg.B", StartLine: 30, EndLine: 45, Body: "func B() {}"},
+	})
+
+	got, err := srv.cachedRank("req-1", 2)
+	require.NoError(t, err)
+	assert.Equal(t, "pkg.B", got.QualifiedName)
+}
+
+func TestCachedRankSurvivesLongSessionAndRejectsInvalidRanks(t *testing.T) {
+	srv := NewServer(nil, slog.Default())
+	const requestCount = 256
+	for i := 0; i < requestCount; i++ {
+		srv.cacheExpansion(fmt.Sprintf("req-%d", i), []retrieve.ScoredResult{{QualifiedName: "pkg.A"}})
+	}
+	_, err := srv.cachedRank("req-0", 1)
+	require.NoError(t, err)
+	_, err = srv.cachedRank(fmt.Sprintf("req-%d", requestCount-1), 2)
+	assert.ErrorContains(t, err, "out of range")
+}
+
+func TestExpansionPagesAreLosslessAndExplicit(t *testing.T) {
+	body := "func Huge() {\n" + strings.Repeat("\tuse(\"ёж\")\n", 6000) + "}\n"
+	srv := NewServer(nil, slog.Default())
+	state := continuationState{
+		RequestID: "req-1",
+		Rank:      1,
+		Symbol: retrieve.ScoredResult{
+			QualifiedName: "pkg.Huge", Kind: "function", File: "pkg/huge.go", StartLine: 10, EndLine: 6011,
+		},
+		Body: body, SHA256: "digest",
+	}
+
+	var rebuilt strings.Builder
+	page := srv.pageFromState(state)
+	for {
+		rebuilt.WriteString(page.Body)
+		out := renderExpansionPage(page)
+		if page.Complete() {
+			assert.Contains(t, out, "status:complete")
+			assert.NotContains(t, out, "NEXT ACTION REQUIRED")
+			break
+		}
+		assert.Contains(t, out, "status:more")
+		assert.Contains(t, out, "NEXT ACTION REQUIRED")
+		require.NotEmpty(t, page.NextCursor)
+		var err error
+		page, err = srv.continueExpansion(page.NextCursor)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, body, rebuilt.String())
+}
+
+func TestExpansionPageHandlesOneHugeUTF8Line(t *testing.T) {
+	body := strings.Repeat("ёж", expansionPageBytes)
+	srv := NewServer(nil, slog.Default())
+	page := srv.pageFromState(continuationState{Body: body, SHA256: "digest", Symbol: retrieve.ScoredResult{StartLine: 7}})
+	require.False(t, page.Complete())
+	assert.True(t, utf8.ValidString(page.Body))
+	assert.Equal(t, 7, page.StartLine)
+	assert.Greater(t, page.EndColumn, page.StartColumn)
+}
+
+func TestRenderMarkdownKeepsGraphOnCompactAndMarksExcerpt(t *testing.T) {
+	out := renderMarkdown("req-1", retrieve.OutputModeAnswer, retrieve.Result{Symbols: []retrieve.ScoredResult{
+		{
+			QualifiedName: "pkg.Compact", Kind: "function", File: "pkg/a.go", StartLine: 10, EndLine: 20,
+			Body: "func Compact()", Detail: "compact",
+			Callees: []retrieve.SymbolRef{{
+				QualifiedName: "pkg.Next", File: "pkg/b.go", Lines: "30-40", CallLine: 17,
+				PathStatus: "static_unverified", CallSite: "16 case enabled: | 17 Next()",
+			}},
+		},
+		{
+			QualifiedName: "pkg.Excerpt", Kind: "function", File: "pkg/c.go", StartLine: 100, EndLine: 180,
+			Body: "callNext()", Detail: "excerpt", BodyStartLine: 140, BodyEndLine: 140,
+		},
+	}})
+	assert.Contains(t, out, "callees (path_status=static_unverified; verify branch/dispatch): pkg.Next (pkg/b.go:30-40@17)")
+	assert.Contains(t, out, "[callsite: 16 case enabled: | 17 Next()]")
+	assert.Contains(t, out, "[excerpt 140-140; expand rank 2 for full body]")
+}
+
+func TestSymbolRefOutputsExposeStaticPathStatusAndCallSite(t *testing.T) {
+	data, err := json.Marshal(symbolRefOutputs([]retrieve.SymbolRef{{
+		QualifiedName: "pkg.Next", File: "pkg/b.go", Lines: "30-40", Kind: "function", CallLine: 17,
+		PathStatus: "static_unverified", CallSite: "16 case enabled: | 17 Next()",
+	}}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"name":"pkg.Next","file":"pkg/b.go","lines":"30-40","kind":"function","call_line":17,"path_status":"static_unverified","callsite_evidence":"16 case enabled: | 17 Next()"}]`, string(data))
 }
 
 func TestServerRecordsFeedback(t *testing.T) {
