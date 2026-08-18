@@ -16,6 +16,9 @@ const (
 	evidenceWindowLines  = 10
 	evidenceWindowStride = 5
 	evidenceContextLines = 3
+	// evidenceMaxWindows bounds the per-result embedding cost on very long
+	// symbols by widening the stride instead of scoring every window.
+	evidenceMaxWindows = 64
 )
 
 // applyEvidenceSpans replaces each long full-body result's Body with the most
@@ -34,6 +37,7 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, qvec []float32, resul
 	type job struct {
 		ri       int
 		winStart []int
+		excerpt  string // capped body to restore if windowing cannot finish
 	}
 	var jobs []job
 
@@ -42,12 +46,30 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, qvec []float32, resul
 		if res.Detail == "compact" {
 			continue
 		}
+		// The indexed body is capped, so windowing it can only ever surface the
+		// head of a long symbol — measured on prometheus, the shown span
+		// contained the queried code in 3% of deep-content cases (cmd/deepprobe).
+		// Hydrate the lossless body first so the window is chosen over the whole
+		// function; the excerpt is restored if the scoring pass cannot run.
+		excerpt := res.Body
+		if r.store != nil {
+			if full, err := r.store.GetSymbolBody(ctx, res.SymbolID); err == nil && full.Body != "" {
+				res.Body = full.Body
+			}
+		}
 		lines := strings.Split(res.Body, "\n")
 		if len(lines) <= evidenceMaxBodyLines {
+			// Too few lines to window (a long minified line hydrates to one),
+			// so the capped excerpt is the only bounded thing to send.
+			res.Body = excerpt
 			continue
 		}
-		j := job{ri: ri}
-		for start := 0; start < len(lines); start += evidenceWindowStride {
+		stride := evidenceWindowStride
+		if n := len(lines) / stride; n > evidenceMaxWindows {
+			stride = len(lines)/evidenceMaxWindows + 1
+		}
+		j := job{ri: ri, excerpt: excerpt}
+		for start := 0; start < len(lines); start += stride {
 			end := start + evidenceWindowLines
 			if end > len(lines) {
 				end = len(lines)
@@ -66,7 +88,13 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, qvec []float32, resul
 
 	vecs, err := r.embedder.Embed(ctx, windowTexts)
 	if err != nil || len(vecs) != len(windowTexts) {
-		return // keep full bodies
+		// Never leave a hydrated body in place: without scoring there is no
+		// window to trim it to, and the untrimmed body is what the cap existed
+		// to avoid sending.
+		for _, j := range jobs {
+			results[j.ri].Body = j.excerpt
+		}
+		return
 	}
 
 	wi := 0

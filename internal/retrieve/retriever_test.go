@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -864,4 +865,74 @@ func TestApplyEvidenceSpansMarksVisibleExcerpt(t *testing.T) {
 	require.Equal(t, 100, results[0].BodyStartLine)
 	require.Equal(t, 112, results[0].BodyEndLine)
 	require.Len(t, strings.Split(results[0].Body, "\n"), 13)
+}
+
+// needleEmbedder scores only the window that contains the needle, standing in
+// for a real query embedding that matches one region of a function.
+type needleEmbedder struct{ needle string }
+
+func (e *needleEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		out[i] = make([]float32, 4)
+		if strings.Contains(t, e.needle) {
+			out[i][0] = 1.0
+		} else {
+			out[i][1] = 1.0
+		}
+	}
+	return out, nil
+}
+
+type failingEmbedder struct{}
+
+func (e *failingEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("embed unavailable")
+}
+
+// Regression: the indexed body is capped, so windowing it could only ever
+// surface the head of a long symbol. Measured before the fix, the shown span
+// contained the queried code in 3% of deep-content cases on prometheus and 0%
+// on cockroach (cmd/deepprobe).
+func TestApplyEvidenceSpansWindowsTheLosslessBody(t *testing.T) {
+	head := strings.Repeat("head\n", 30)
+	full := head + strings.Repeat("tail\n", 25) + "NEEDLE here\n" + strings.Repeat("tail\n", 20)
+	r := &Retriever{
+		embedder: &needleEmbedder{needle: "NEEDLE"},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: head, FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 176,
+		Body: head, Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+
+	require.Contains(t, results[0].Body, "NEEDLE", "the window must come from the lossless body")
+	require.Greater(t, results[0].BodyStartLine, 130, "the head is not where the answer was")
+	require.LessOrEqual(t, results[0].BodyStartLine, 155)
+	require.GreaterOrEqual(t, results[0].BodyEndLine, 155)
+}
+
+// Hydrating before scoring means a scoring failure would otherwise ship the
+// whole function — the exact payload the cap exists to prevent.
+func TestApplyEvidenceSpansRestoresExcerptWhenScoringFails(t *testing.T) {
+	head := strings.Repeat("head\n", 30)
+	full := head + strings.Repeat("tail\n", 200)
+	r := &Retriever{
+		embedder: &failingEmbedder{},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: head, FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 330,
+		Body: head, Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+
+	require.Equal(t, head, results[0].Body, "a failed scoring pass must not leave the body hydrated")
 }
