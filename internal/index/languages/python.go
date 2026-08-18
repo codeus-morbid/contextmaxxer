@@ -83,7 +83,7 @@ func pyFuncSymbol(node *tree_sitter.Node, source []byte, className string, kind 
 		qname = className + "." + name
 	}
 	doc := pyDocstring(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          kind,
@@ -93,13 +93,14 @@ func pyFuncSymbol(node *tree_sitter.Node, source []byte, className string, kind 
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
 func pyClassSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	name := nodeText(node.ChildByFieldName("name"), source)
 	doc := pyDocstring(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindClass,
@@ -109,6 +110,7 @@ func pyClassSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
@@ -219,12 +221,13 @@ func pyExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 		}
 		for _, cap := range m.Captures {
 			callee := nodeText(&cap.Node, source)
+			callLine := int(cap.Node.StartPosition().Row) + 1
 			if seen[callee] {
 				continue
 			}
 			seen[callee] = true
 			if dstID, found := nameToID[callee]; found && dstID != srcID {
-				edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+				edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 				continue
 			}
 			// DECISION(2026-06): resolve a dotted callee by UNIQUE suffix only.
@@ -247,7 +250,7 @@ func pyExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 				}
 			}
 			if count == 1 {
-				edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0})
+				edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 			}
 		}
 	}

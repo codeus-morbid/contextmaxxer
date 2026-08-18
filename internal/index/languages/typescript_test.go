@@ -107,12 +107,12 @@ func TestTSExtractor_EdgesUniqueSuffixOnly(t *testing.T) {
 
 	// Ambiguous suffix (>1 same-named symbol) must not fan out into a hairball.
 	ambiguous := ext.Edges(tree, source, map[string]int64{"run": 1, "A.save": 2, "B.save": 3})
-	require.NotContains(t, ambiguous, edge(1, 2), "ambiguous suffix must not fan out: %+v", ambiguous)
-	require.NotContains(t, ambiguous, edge(1, 3))
+	requireNoEdge(t, ambiguous, 1, 2)
+	requireNoEdge(t, ambiguous, 1, 3)
 
 	// Unique suffix resolves.
 	unique := ext.Edges(tree, source, map[string]int64{"run": 1, "A.save": 2})
-	require.Contains(t, unique, edge(1, 2), "unique suffix must resolve: %+v", unique)
+	requireEdge(t, unique, 1, 2, 2)
 }
 
 func TestTSExtractor_EdgesTypeAwareField(t *testing.T) {
@@ -151,10 +151,10 @@ class OtherRepo {
 	// this.repo.find(): repo's declared type is BarRepo -> BarRepo.find, NOT
 	// OtherRepo.find (the suffix-only resolver would have dropped this ambiguous
 	// "find" entirely).
-	require.Contains(t, edges, edge(2, 5), "this.repo.find() must resolve to BarRepo.find via field type, got: %+v", edges)
-	require.NotContains(t, edges, edge(2, 8), "must not bind to OtherRepo.find")
+	requireEdge(t, edges, 2, 5, 4)
+	requireNoEdge(t, edges, 2, 8)
 	// this.helper(): resolves to the enclosing class's method.
-	require.Contains(t, edges, edge(2, 3), "this.helper() must resolve to FooService.helper, got: %+v", edges)
+	requireEdge(t, edges, 2, 3, 5)
 }
 
 // In the TS grammar `export function f()` is an export_statement CONTAINING

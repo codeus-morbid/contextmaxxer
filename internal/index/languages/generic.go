@@ -98,7 +98,7 @@ func (g *genericExtractor) collectCalls(body *tree_sitter.Node, src []byte, srcI
 		if resolve, ok := g.cfg.calls[n.Kind()]; ok {
 			if callee := resolve(n, src); callee != "" && !seen[callee] {
 				seen[callee] = true
-				g.emitEdge(callee, srcID, nameToID, edges)
+				g.emitEdge(callee, srcID, int(n.StartPosition().Row)+1, nameToID, edges)
 			}
 		}
 		for i := uint(0); i < n.ChildCount(); i++ {
@@ -111,9 +111,9 @@ func (g *genericExtractor) collectCalls(body *tree_sitter.Node, src []byte, srcI
 // emitEdge resolves a callee name with the same conservatism as the Go and
 // Python extractors: exact qualified-name hit, else a UNIQUE suffix match —
 // >1 same-named symbol means no edge (the Django-hairball lesson).
-func (g *genericExtractor) emitEdge(callee string, srcID int64, nameToID map[string]int64, edges *[]store.Edge) {
+func (g *genericExtractor) emitEdge(callee string, srcID int64, callLine int, nameToID map[string]int64, edges *[]store.Edge) {
 	if dstID, ok := nameToID[callee]; ok && dstID != srcID {
-		*edges = appendEdgeUniq(*edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+		*edges = appendEdgeUniq(*edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 		return
 	}
 	var matchID int64
@@ -131,7 +131,7 @@ func (g *genericExtractor) emitEdge(callee string, srcID int64, nameToID map[str
 		}
 	}
 	if count == 1 {
-		*edges = appendEdgeUniq(*edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0})
+		*edges = appendEdgeUniq(*edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 	}
 }
 
@@ -182,7 +182,7 @@ func (g *genericExtractor) symbol(n *tree_sitter.Node, src []byte, scope []strin
 	simple := segs[len(segs)-1]
 	qname := strings.Join(append(append([]string{}, scope...), segs...), ".")
 
-	excerpt := bodyExcerpt(n, src)
+	excerpt, fullBody := bodyParts(n, src)
 	return store.Symbol{
 		Name:          simple,
 		Kind:          kind,
@@ -192,6 +192,7 @@ func (g *genericExtractor) symbol(n *tree_sitter.Node, src []byte, scope []strin
 		Signature:     firstLine(excerpt),
 		Docstring:     precedingComment(n, src),
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 

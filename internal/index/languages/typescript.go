@@ -97,7 +97,7 @@ func tsWalkClassBody(body *tree_sitter.Node, source []byte, className string, sy
 func tsFuncSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	name := nodeText(node.ChildByFieldName("name"), source)
 	doc := tsJSDocComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindFunction,
@@ -107,13 +107,14 @@ func tsFuncSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
 func tsClassSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	name := nodeText(node.ChildByFieldName("name"), source)
 	doc := tsJSDocComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindClass,
@@ -123,6 +124,7 @@ func tsClassSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
@@ -133,7 +135,7 @@ func tsMethodSymbol(node *tree_sitter.Node, source []byte, className string) sto
 		qname = name
 	}
 	doc := tsJSDocComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindMethod,
@@ -143,13 +145,14 @@ func tsMethodSymbol(node *tree_sitter.Node, source []byte, className string) sto
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
 func tsInterfaceSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	name := nodeText(node.ChildByFieldName("name"), source)
 	doc := tsJSDocComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindInterface,
@@ -159,13 +162,14 @@ func tsInterfaceSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
 func tsTypeAliasSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	name := nodeText(node.ChildByFieldName("name"), source)
 	doc := tsJSDocComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindType,
@@ -175,6 +179,7 @@ func tsTypeAliasSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
@@ -414,6 +419,7 @@ func tsExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 			continue
 		}
 		callee := nodeText(fnNode, source)
+		callLine := int(fnNode.StartPosition().Row) + 1
 
 		key := callee
 		if recvNode != nil {
@@ -439,7 +445,7 @@ func tsExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 			}
 			if recvType != "" {
 				if dstID, found := nameToID[recvType+"."+callee]; found && dstID != srcID {
-					edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+					edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 					continue
 				}
 			}
@@ -448,7 +454,7 @@ func tsExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 		// Fallback: exact name, then UNIQUE suffix only (ambiguous -> no edge, to
 		// avoid the hairball).
 		if dstID, found := nameToID[callee]; found && dstID != srcID {
-			edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+			edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 			continue
 		}
 		var matchID int64
@@ -467,7 +473,7 @@ func tsExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 			}
 		}
 		if count == 1 {
-			edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0})
+			edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 		}
 	}
 	return edges

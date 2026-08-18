@@ -104,10 +104,10 @@ func TestPyExtractor_EdgesUniqueSuffixOnly(t *testing.T) {
 	// Ambiguous: two symbols share the suffix "save" -> no edge (Django's hundreds
 	// of same-named methods otherwise exploded the graph to ~35 edges/symbol).
 	ambiguous := ext.Edges(tree, source, map[string]int64{"run": 1, "A.save": 2, "B.save": 3})
-	require.NotContains(t, ambiguous, edge(1, 2), "ambiguous suffix must not fan out: %+v", ambiguous)
-	require.NotContains(t, ambiguous, edge(1, 3))
+	requireNoEdge(t, ambiguous, 1, 2)
+	requireNoEdge(t, ambiguous, 1, 3)
 
 	// Unique: a single "save" suffix resolves to that one symbol.
 	unique := ext.Edges(tree, source, map[string]int64{"run": 1, "A.save": 2})
-	require.Contains(t, unique, edge(1, 2), "unique suffix must resolve: %+v", unique)
+	requireEdge(t, unique, 1, 2, 2)
 }
