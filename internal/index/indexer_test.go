@@ -2,6 +2,7 @@ package index_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ type mockStore struct {
 	embeddedIDs       []int64
 	edges             []store.Edge
 	nextSymID         int64
+	contentVersion    int
 }
 
 func (m *mockStore) ListFiles(_ context.Context) ([]store.File, error) { return m.files, nil }
@@ -72,6 +74,10 @@ func (m *mockStore) UpsertEmbeddingBatch(_ context.Context, embeddings []store.E
 func (m *mockStore) GetEmbedding(_ context.Context, symbolID int64) ([]float32, bool, error) {
 	vec, ok := m.embeddings[symbolID]
 	return vec, ok, nil
+}
+func (m *mockStore) SetIndexContentVersion(_ context.Context, version int) error {
+	m.contentVersion = version
+	return nil
 }
 
 type mockParser struct{}
@@ -211,6 +217,7 @@ func TestIndexer_EmbedsStructuredSymbolContext(t *testing.T) {
 	stats, err := idx.Index(context.Background(), root)
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.Symbols)
+	require.Equal(t, store.CurrentIndexContentVersion, ms.contentVersion)
 	require.Equal(t, []int64{1}, ms.embeddedIDs)
 	require.Len(t, me.texts, 1)
 	require.Contains(t, me.texts[0], "file: "+relPath)
@@ -312,6 +319,94 @@ func TestIndexer_ExtractsEdgesToUnchangedFileSymbols(t *testing.T) {
 	require.Equal(t, 1, stats.Edges)
 	require.Len(t, ms.edges, 1)
 	require.Equal(t, int64(200), ms.edges[0].Dst)
+}
+
+func TestIndexer_EdgeSourceUsesCurrentFileWhenQualifiedNameIsDuplicated(t *testing.T) {
+	root := t.TempDir()
+	callerSource := []byte("package main\nfunc main() { scrape.NewManager() }\n")
+	otherMainSource := []byte("package main\nfunc main() {}\n")
+	targetSource := []byte("package scrape\nfunc NewManager() {}\n")
+	records := make(chan index.FileRecord, 3)
+	errs := make(chan error, 1)
+	for i, item := range []struct {
+		rel    string
+		source []byte
+	}{
+		{rel: filepath.Join("cmd", "prometheus", "main.go"), source: callerSource},
+		{rel: filepath.Join("tools", "generator", "main.go"), source: otherMainSource},
+		{rel: filepath.Join("scrape", "manager.go"), source: targetSource},
+	} {
+		fullPath := filepath.Join(root, item.rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0755))
+		require.NoError(t, os.WriteFile(fullPath, item.source, 0644))
+		records <- index.FileRecord{Path: fullPath, RelPath: item.rel, Language: "go", Hash: fmt.Sprintf("hash-%d", i)}
+	}
+	close(records)
+	close(errs)
+
+	extractor := &sourceAwareExtractor{
+		symbolsBySource: map[string][]store.Symbol{
+			string(callerSource):    {{Name: "main", Kind: store.KindFunction, QualifiedName: "main.main"}},
+			string(otherMainSource): {{Name: "main", Kind: store.KindFunction, QualifiedName: "main.main"}},
+			string(targetSource):    {{Name: "NewManager", Kind: store.KindFunction, QualifiedName: "scrape.NewManager"}},
+		},
+		edgeForNames: map[string][2]string{
+			string(callerSource): {"main.main", "scrape.NewManager"},
+		},
+	}
+	ms := &mockStore{}
+	idx := index.NewIndexer(ms, &mockParser{}, &mockEmbedder{}, index.NewFakeWalker(records, errs), func(string) (index.LanguageExtractor, bool) {
+		return extractor, true
+	}, slog.Default())
+
+	stats, err := idx.Index(context.Background(), root)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Edges)
+	require.Equal(t, []store.Edge{{Src: 1, Dst: 3, Kind: store.EdgeCalls, Weight: 1}}, ms.edges)
+}
+
+func TestIndexer_SkipsAmbiguousCalleeQualifiedNameAcrossFiles(t *testing.T) {
+	root := t.TempDir()
+	callerSource := []byte("package caller\nfunc Run() { dup.Helper() }\n")
+	helperOneSource := []byte("package dup\nfunc Helper() {}\n")
+	helperTwoSource := []byte("package dup\nfunc Helper() {}\n")
+	records := make(chan index.FileRecord, 3)
+	errs := make(chan error, 1)
+	for i, item := range []struct {
+		rel    string
+		source []byte
+	}{
+		{rel: filepath.Join("caller", "caller.go"), source: callerSource},
+		{rel: filepath.Join("one", "helper.go"), source: helperOneSource},
+		{rel: filepath.Join("two", "helper.go"), source: helperTwoSource},
+	} {
+		fullPath := filepath.Join(root, item.rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0755))
+		require.NoError(t, os.WriteFile(fullPath, item.source, 0644))
+		records <- index.FileRecord{Path: fullPath, RelPath: item.rel, Language: "go", Hash: fmt.Sprintf("hash-%d", i)}
+	}
+	close(records)
+	close(errs)
+
+	extractor := &sourceAwareExtractor{
+		symbolsBySource: map[string][]store.Symbol{
+			string(callerSource):    {{Name: "Run", Kind: store.KindFunction, QualifiedName: "caller.Run"}},
+			string(helperOneSource): {{Name: "Helper", Kind: store.KindFunction, QualifiedName: "dup.Helper"}},
+			string(helperTwoSource): {{Name: "Helper", Kind: store.KindFunction, QualifiedName: "dup.Helper"}},
+		},
+		edgeForNames: map[string][2]string{
+			string(callerSource): {"caller.Run", "dup.Helper"},
+		},
+	}
+	ms := &mockStore{}
+	idx := index.NewIndexer(ms, &mockParser{}, &mockEmbedder{}, index.NewFakeWalker(records, errs), func(string) (index.LanguageExtractor, bool) {
+		return extractor, true
+	}, slog.Default())
+
+	stats, err := idx.Index(context.Background(), root)
+	require.NoError(t, err)
+	require.Zero(t, stats.Edges)
+	require.Empty(t, ms.edges)
 }
 
 func TestIndexer_ReusesEmbeddingForUnchangedSymbolTextInChangedFile(t *testing.T) {

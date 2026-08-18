@@ -28,11 +28,21 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
 CREATE INDEX IF NOT EXISTS idx_symbols_qname ON symbols(qualified_name);
 
+-- Full bodies are stored only for symbols whose searchable excerpt is lossy.
+-- Keeping them out of symbols prevents vector/FTS/query scans from hydrating
+-- large source blobs during normal retrieval.
+CREATE TABLE IF NOT EXISTS symbol_bodies (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  sha256 TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS edges (
   src INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   dst INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,
   weight REAL NOT NULL DEFAULT 1.0,
+  call_line INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (src, dst, kind)
 );
 

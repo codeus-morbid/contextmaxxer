@@ -91,7 +91,7 @@ func (s *Store) ListAllEdges(ctx context.Context) ([]store.Edge, error) {
 	if s.graph.edgesLoaded {
 		return s.graph.edges, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT src,dst,kind,weight FROM edges`)
+	rows, err := s.db.QueryContext(ctx, `SELECT src,dst,kind,weight,call_line FROM edges`)
 	if err != nil {
 		return nil, fmt.Errorf("list all edges: %w", err)
 	}
@@ -99,7 +99,7 @@ func (s *Store) ListAllEdges(ctx context.Context) ([]store.Edge, error) {
 	var edges []store.Edge
 	for rows.Next() {
 		var e store.Edge
-		if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight); err != nil {
+		if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight, &e.CallLine); err != nil {
 			return nil, fmt.Errorf("list all edges scan: %w", err)
 		}
 		edges = append(edges, e)

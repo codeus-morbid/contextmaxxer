@@ -1,7 +1,9 @@
 package languages
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
 	"github.com/stretchr/testify/require"
@@ -24,6 +26,18 @@ func (s *MyStruct) Method() {}
 
 const MaxRetries = 3
 `
+
+func TestGoExtractor_PreservesLosslessBodyOutsideExcerpt(t *testing.T) {
+	function := "func Huge() {\n\t_ = \"" + strings.Repeat("ё", 1100) + "\"\n}"
+	source := []byte("package mypkg\n\n" + function)
+	p := NewGoParser()
+	tree := p.Parse(source, nil)
+	syms := (&goExtractor{}).Symbols(tree, source)
+	require.Len(t, syms, 1)
+	require.Contains(t, syms[0].BodyExcerpt, "... [truncated]")
+	require.True(t, utf8.ValidString(syms[0].BodyExcerpt))
+	require.Equal(t, function, syms[0].FullBody)
+}
 
 func TestGoExtractor_Symbols(t *testing.T) {
 	p := NewGoParser()
@@ -126,7 +140,7 @@ func Caller() {
 
 	edges := ext.Edges(tree, source, nameToID)
 
-	require.Contains(t, edges, edge(1, 2))
+	requireEdge(t, edges, 1, 2, 4)
 }
 
 func TestGoExtractor_EdgesResolveUniqueSelectorSuffix(t *testing.T) {
@@ -147,7 +161,7 @@ func Caller(s *Store) {
 
 	edges := ext.Edges(tree, source, nameToID)
 
-	require.Contains(t, edges, edge(1, 2))
+	requireEdge(t, edges, 1, 2, 4)
 }
 
 func TestGoExtractor_EdgesSkipAmbiguousSelectorSuffix(t *testing.T) {
@@ -169,8 +183,69 @@ func Caller(s *Store) {
 
 	edges := ext.Edges(tree, source, nameToID)
 
-	require.NotContains(t, edges, edge(1, 2))
-	require.NotContains(t, edges, edge(1, 3))
+	requireNoEdge(t, edges, 1, 2)
+	requireNoEdge(t, edges, 1, 3)
+}
+
+func TestGoExtractor_EdgesResolveImportedPackageSelectorDespiteAmbiguousSuffix(t *testing.T) {
+	tests := []struct {
+		name       string
+		importDecl string
+		call       string
+	}{
+		{name: "default import", importDecl: `"example/scrape"`, call: "scrape.NewManager()"},
+		{name: "aliased import", importDecl: `prom "example/scrape"`, call: "prom.NewManager()"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := []byte("package main\n\nimport " + tt.importDecl + "\n\nfunc run() {\n\t" + tt.call + "\n}\n")
+			p := NewGoParser()
+			tree := p.Parse(source, nil)
+			ext := &goExtractor{}
+
+			nameToID := map[string]int64{
+				"main.run":          1,
+				"scrape.NewManager": 2,
+				"other.NewManager":  3,
+			}
+
+			edges := ext.Edges(tree, source, nameToID)
+
+			requireEdge(t, edges, 1, 2, 6)
+			requireNoEdge(t, edges, 1, 3)
+		})
+	}
+}
+
+func TestGoExtractor_EdgesDoNotResolveShadowedImportQualifier(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "parameter", body: "func run(scrape *Manager) {\n\tscrape.NewManager()\n}"},
+		{name: "local", body: "func run() {\n\tscrape := makeManager()\n\tscrape.NewManager()\n}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := []byte("package main\n\nimport \"example/scrape\"\n\n" + tt.body + "\n")
+			p := NewGoParser()
+			tree := p.Parse(source, nil)
+			ext := &goExtractor{}
+
+			nameToID := map[string]int64{
+				"main.run":          1,
+				"scrape.NewManager": 2,
+				"other.NewManager":  3,
+			}
+
+			edges := ext.Edges(tree, source, nameToID)
+
+			requireNoEdge(t, edges, 1, 2)
+			requireNoEdge(t, edges, 1, 3)
+		})
+	}
 }
 
 func TestGoExtractor_EdgesSkipBuiltinCalls(t *testing.T) {
@@ -219,9 +294,25 @@ func Helper() {
 
 	edges := ext.Edges(tree, source, nameToID)
 
-	require.NotContains(t, edges, edge(1, 2), "bare call must not bind to a method via suffix, got: %+v", edges)
+	requireNoEdge(t, edges, 1, 2)
 }
 
-func edge(src, dst int64) store.Edge {
-	return store.Edge{Src: src, Dst: dst, Kind: "calls", Weight: 1}
+func requireEdge(t *testing.T, edges []store.Edge, src, dst int64, callLine int) {
+	t.Helper()
+	for _, edge := range edges {
+		if edge.Src == src && edge.Dst == dst && edge.Kind == store.EdgeCalls {
+			require.Equal(t, callLine, edge.CallLine)
+			return
+		}
+	}
+	require.Failf(t, "missing edge", "%d -> %d not found in %+v", src, dst, edges)
+}
+
+func requireNoEdge(t *testing.T, edges []store.Edge, src, dst int64) {
+	t.Helper()
+	for _, edge := range edges {
+		if edge.Src == src && edge.Dst == dst && edge.Kind == store.EdgeCalls {
+			require.Failf(t, "unexpected edge", "%d -> %d found in %+v", src, dst, edges)
+		}
+	}
 }

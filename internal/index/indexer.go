@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -30,6 +31,10 @@ type FileWalker interface {
 
 type knownFilesWalker interface {
 	SetKnownFiles(map[string]store.File)
+}
+
+type contentVersionStore interface {
+	SetIndexContentVersion(ctx context.Context, version int) error
 }
 
 // ExtractorFactory returns a LanguageExtractor for the given language name.
@@ -72,10 +77,69 @@ func NewIndexer(s store.Store, p Parser, e embed.Embedder, w FileWalker, ef Extr
 }
 
 type edgeExtractionWork struct {
-	tree      *tree_sitter.Tree
-	source    []byte
-	language  string
-	extractor LanguageExtractor
+	tree          *tree_sitter.Tree
+	source        []byte
+	language      string
+	extractor     LanguageExtractor
+	localNameToID map[string]int64
+}
+
+type qualifiedNameIDs struct {
+	first int64
+	more  []int64
+}
+
+func addQualifiedNameID(names map[string]qualifiedNameIDs, name string, id int64) {
+	ids := names[name]
+	if ids.first == 0 {
+		ids.first = id
+		names[name] = ids
+		return
+	}
+	if ids.first == id {
+		return
+	}
+	for _, existing := range ids.more {
+		if existing == id {
+			return
+		}
+	}
+	ids.more = append(ids.more, id)
+	names[name] = ids
+}
+
+func removeQualifiedNameID(names map[string]qualifiedNameIDs, name string, id int64) {
+	ids, ok := names[name]
+	if !ok {
+		return
+	}
+	if ids.first == id {
+		if len(ids.more) == 0 {
+			delete(names, name)
+			return
+		}
+		ids.first = ids.more[0]
+		ids.more = ids.more[1:]
+		names[name] = ids
+		return
+	}
+	for i, existing := range ids.more {
+		if existing == id {
+			ids.more = append(ids.more[:i], ids.more[i+1:]...)
+			names[name] = ids
+			return
+		}
+	}
+}
+
+func unambiguousQualifiedNames(names map[string]qualifiedNameIDs) map[string]int64 {
+	result := make(map[string]int64, len(names))
+	for name, ids := range names {
+		if ids.first != 0 && len(ids.more) == 0 {
+			result[name] = ids.first
+		}
+	}
+	return result
 }
 
 // DECISION: file processing is sequential (single goroutine consuming the walker channel).
@@ -103,7 +167,7 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 	}
 
 	seen := make(map[string]bool, len(existing))
-	runNameToIDByLang := make(map[string]map[string]int64)
+	runNamesByLang := make(map[string]map[string]qualifiedNameIDs)
 	loadedLangMaps := make(map[string]bool)
 	var edgeWork []edgeExtractionWork
 
@@ -139,11 +203,11 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 			if err != nil {
 				idx.log.Warn("list symbols by language error", "lang", rec.Language, "err", err)
 			} else {
-				if runNameToIDByLang[rec.Language] == nil {
-					runNameToIDByLang[rec.Language] = make(map[string]int64, len(syms))
+				if runNamesByLang[rec.Language] == nil {
+					runNamesByLang[rec.Language] = make(map[string]qualifiedNameIDs, len(syms))
 				}
 				for _, sym := range syms {
-					runNameToIDByLang[rec.Language][sym.QualifiedName] = sym.ID
+					addQualifiedNameID(runNamesByLang[rec.Language], sym.QualifiedName, sym.ID)
 				}
 			}
 			loadedLangMaps[rec.Language] = true
@@ -156,8 +220,8 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 				idx.log.Warn("list old symbols error", "fileID", prev.ID, "err", err)
 			}
 			for _, old := range oldSymbols {
-				if runNameToIDByLang[rec.Language] != nil {
-					delete(runNameToIDByLang[rec.Language], old.QualifiedName)
+				if runNamesByLang[rec.Language] != nil {
+					removeQualifiedNameID(runNamesByLang[rec.Language], old.QualifiedName, old.ID)
 				}
 				if vec, ok, err := idx.store.GetEmbedding(ctx, old.ID); err == nil && ok {
 					reusableEmbeddings[embeddingTextHash(rec.RelPath, rec.Language, old)] = vec
@@ -206,13 +270,17 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 			}
 		}
 
+		localNameToID := make(map[string]int64, len(symbols))
 		for i, sym := range symbols {
-			if runNameToIDByLang[rec.Language] == nil {
-				runNameToIDByLang[rec.Language] = make(map[string]int64)
+			if runNamesByLang[rec.Language] == nil {
+				runNamesByLang[rec.Language] = make(map[string]qualifiedNameIDs)
 			}
-			runNameToIDByLang[rec.Language][sym.QualifiedName] = ids[i]
+			addQualifiedNameID(runNamesByLang[rec.Language], sym.QualifiedName, ids[i])
+			localNameToID[sym.QualifiedName] = ids[i]
 		}
-		edgeWork = append(edgeWork, edgeExtractionWork{tree: tree, source: source, language: rec.Language, extractor: extractor})
+		edgeWork = append(edgeWork, edgeExtractionWork{
+			tree: tree, source: source, language: rec.Language, extractor: extractor, localNameToID: localNameToID,
+		})
 
 		if len(symbols) > 0 {
 			var embedTexts []string
@@ -256,8 +324,39 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 	for range errs {
 	}
 
+	unambiguousByLang := make(map[string]map[string]int64, len(runNamesByLang))
+	for language, names := range runNamesByLang {
+		unambiguousByLang[language] = unambiguousQualifiedNames(names)
+	}
 	for _, work := range edgeWork {
-		edges := work.extractor.Edges(work.tree, work.source, runNameToIDByLang[work.language])
+		nameToID := unambiguousByLang[work.language]
+		if nameToID == nil {
+			nameToID = make(map[string]int64)
+			unambiguousByLang[work.language] = nameToID
+		}
+		type previousID struct {
+			id     int64
+			exists bool
+		}
+		previous := make(map[string]previousID, len(work.localNameToID))
+		// DECISION(2026-08): global qnames resolve only when unique; symbols from
+		// the current file temporarily override that map so duplicate package names
+		// (especially main.main) still produce edges from the correct source ID.
+		// ASSUMES: unresolved cross-directory duplicate callees are safer than false
+		// edges. REVISIT IF: Go qnames become import-path-qualified.
+		for name, id := range work.localNameToID {
+			old, exists := nameToID[name]
+			previous[name] = previousID{id: old, exists: exists}
+			nameToID[name] = id
+		}
+		edges := work.extractor.Edges(work.tree, work.source, nameToID)
+		for name, old := range previous {
+			if old.exists {
+				nameToID[name] = old.id
+			} else {
+				delete(nameToID, name)
+			}
+		}
 		if len(edges) == 0 {
 			continue
 		}
@@ -274,6 +373,13 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 				idx.log.Warn("delete removed file error", "path", path, "err", err)
 			} else {
 				stats.FilesDeleted++
+			}
+		}
+	}
+	if idx.forceReindex || len(existingList) == 0 {
+		if versioned, ok := idx.store.(contentVersionStore); ok {
+			if err := versioned.SetIndexContentVersion(ctx, store.CurrentIndexContentVersion); err != nil {
+				return stats, fmt.Errorf("mark lossless index content: %w", err)
 			}
 		}
 	}

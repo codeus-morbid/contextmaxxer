@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -131,6 +132,32 @@ func TestStore_SaveSymbolBatch(t *testing.T) {
 		require.False(t, seen[id], "duplicate ID %d", id)
 		seen[id] = true
 	}
+}
+
+func TestStore_GetSymbolBodyIsLosslessAndRejectsLegacyTruncation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fid, err := s.SaveFile(ctx, &store.File{Path: "/body.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+
+	full := "func Huge() {\n" + strings.Repeat("use()\n", 1000) + "}\n"
+	ids, err := s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fid, Name: "Huge", Kind: store.KindFunction, QualifiedName: "pkg.Huge",
+		BodyExcerpt: full[:2000] + "\n// ... [truncated]", FullBody: full,
+	}})
+	require.NoError(t, err)
+	body, err := s.GetSymbolBody(ctx, ids[0])
+	require.NoError(t, err)
+	require.Equal(t, full, body.Body)
+	require.Len(t, body.SHA256, 64)
+
+	legacyID, err := s.SaveSymbol(ctx, &store.Symbol{
+		FileID: fid, Name: "Legacy", Kind: store.KindFunction, QualifiedName: "pkg.Legacy",
+		BodyExcerpt: "func Legacy() {\n// ... [truncated]",
+	})
+	require.NoError(t, err)
+	_, err = s.GetSymbolBody(ctx, legacyID)
+	require.ErrorIs(t, err, store.ErrReindexRequired)
 }
 
 func TestStore_UpsertEmbedding_RoundTrip(t *testing.T) {
@@ -306,8 +333,8 @@ func TestStore_SaveEdgeBatch(t *testing.T) {
 	}
 
 	edges := []store.Edge{
-		{Src: symIDs[0], Dst: symIDs[1], Kind: "calls", Weight: 1.0},
-		{Src: symIDs[1], Dst: symIDs[2], Kind: "calls", Weight: 1.0},
+		{Src: symIDs[0], Dst: symIDs[1], Kind: "calls", Weight: 1.0, CallLine: 17},
+		{Src: symIDs[1], Dst: symIDs[2], Kind: "calls", Weight: 1.0, CallLine: 29},
 	}
 	err = s.SaveEdgeBatch(ctx, edges)
 	require.NoError(t, err)
@@ -316,6 +343,10 @@ func TestStore_SaveEdgeBatch(t *testing.T) {
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM edges`).Scan(&cnt)
 	require.NoError(t, err)
 	require.Equal(t, 2, cnt)
+	got, err := s.GetEdges(ctx, symIDs[0])
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, 17, got[0].CallLine)
 }
 
 func TestStore_ForeignKeysEnabled(t *testing.T) {
@@ -343,13 +374,41 @@ func TestStore_SchemaVersion(t *testing.T) {
 	var ver string
 	err = s1.db.QueryRowContext(context.Background(), `SELECT value FROM _meta WHERE key='schema_version'`).Scan(&ver)
 	require.NoError(t, err)
-	require.Equal(t, "1", ver)
+	require.Equal(t, "2", ver)
 	s1.Close()
 
 	// Second open should not fail (IF NOT EXISTS + version check)
 	s2, err := New(path, "bge-small-en-v1.5", 384)
 	require.NoError(t, err)
 	s2.Close()
+}
+
+func TestStore_ContentVersionRequiresExplicitFullReindex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "content-version.db")
+	ctx := context.Background()
+
+	s1, err := New(path, "bge-small-en-v1.5", 384)
+	require.NoError(t, err)
+	version, err := s1.IndexContentVersion(ctx)
+	require.NoError(t, err)
+	require.Zero(t, version)
+	_, err = s1.SaveFile(ctx, &store.File{Path: "legacy.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+	_, err = s1.db.ExecContext(ctx, `DELETE FROM _meta WHERE key='index_content_version'`)
+	require.NoError(t, err)
+	require.NoError(t, s1.Close())
+
+	s2, err := New(path, "bge-small-en-v1.5", 384)
+	require.NoError(t, err)
+	defer s2.Close()
+	version, err = s2.IndexContentVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, version)
+	require.NoError(t, s2.SetIndexContentVersion(ctx, store.CurrentIndexContentVersion))
+	version, err = s2.IndexContentVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, store.CurrentIndexContentVersion, version)
 }
 
 // Verify that querying a nonexistent file returns ErrNotFound (not sql.ErrNoRows directly).

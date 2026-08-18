@@ -1,5 +1,11 @@
 package store
 
+import "errors"
+
+var ErrReindexRequired = errors.New("store: reindex required")
+
+const CurrentIndexContentVersion = 3
+
 const (
 	KindFunction  = "function"
 	KindMethod    = "method"
@@ -33,6 +39,16 @@ type Symbol struct {
 	Signature     string
 	Docstring     string
 	BodyExcerpt   string
+	// FullBody is populated only while indexing when BodyExcerpt is lossy.
+	// SQLite stores it in a separate lazy table so retrieval never hydrates
+	// large bodies unless expand_context explicitly requests one.
+	FullBody string
+}
+
+type SymbolBody struct {
+	SymbolID int64
+	Body     string
+	SHA256   string
 }
 
 // SymbolToEmbed is a symbol that has no stored embedding yet, joined with the
@@ -49,6 +65,9 @@ type Edge struct {
 	Dst    int64
 	Kind   string
 	Weight float64
+	// CallLine is the first AST-observed call site for calls edges. Other edge
+	// kinds leave it zero.
+	CallLine int
 }
 
 type ScoredSymbol struct {

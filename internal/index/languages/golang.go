@@ -2,7 +2,10 @@ package languages
 
 import (
 	"bytes"
+	pathpkg "path"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
@@ -53,6 +56,7 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 
 	root := tree.RootNode()
 	pkg := goPackageName(root, source)
+	importPrefixes := goImportPrefixes(root, source)
 	lang := goLanguage()
 
 	// Capture the selector operand too, so we can resolve receiver-method calls
@@ -96,6 +100,7 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 		if body == nil {
 			continue
 		}
+		shadowedNames := goFunctionBindingNames(child, source)
 
 		cursor := tree_sitter.NewQueryCursor()
 		matches := cursor.Matches(q, body, source)
@@ -125,7 +130,30 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 				continue
 			}
 			callee := nodeText(fnNode, source)
+			callLine := int(fnNode.StartPosition().Row) + 1
 			isSelector := recvNode != nil
+
+			// DECISION(2026-08): an identifier selector is a package call only when
+			// the operand is an import qualifier not shadowed anywhere in this
+			// function. ASSUMES: import path base or explicit alias matches the
+			// indexed package name. REVISIT IF: package-name/path mismatches dominate
+			// missed cross-package edges.
+			if isSelector && recvNode.Kind() == "identifier" {
+				qualifier := nodeText(recvNode, source)
+				if prefixes, imported := importPrefixes[qualifier]; imported && !shadowedNames[qualifier] {
+					resolved := false
+					for _, prefix := range prefixes {
+						if dstID, found := nameToID[prefix+"."+callee]; found && dstID != srcID {
+							edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
+							resolved = true
+							break
+						}
+					}
+					if resolved {
+						continue
+					}
+				}
+			}
 
 			// Type-aware resolution: `recv.Method()` where recv is the method's own
 			// receiver resolves to the receiver type's method. Catches the dominant
@@ -136,7 +164,7 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 				if dstID, found := nameToID[pkg+"."+recvType+"."+callee]; found && dstID != srcID {
 					if seenKey := "recv:" + callee; !seen[seenKey] {
 						seen[seenKey] = true
-						edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+						edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 					}
 					continue
 				}
@@ -150,11 +178,103 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 				continue
 			}
 			seen[seenKey] = true
-			edges = goResolveCallee(edges, callee, srcID, pkg, isSelector, nameToID)
+			edges = goResolveCallee(edges, callee, srcID, pkg, isSelector, callLine, nameToID)
 		}
 		cursor.Close()
 	}
 	return edges
+}
+
+func goImportPrefixes(root *tree_sitter.Node, source []byte) map[string][]string {
+	imports := make(map[string][]string)
+	var visit func(*tree_sitter.Node)
+	visit = func(node *tree_sitter.Node) {
+		if node.Kind() == "import_spec" {
+			pathNode := node.ChildByFieldName("path")
+			if pathNode != nil {
+				importPath, err := strconv.Unquote(nodeText(pathNode, source))
+				if err == nil {
+					base := pathpkg.Base(importPath)
+					qualifier := base
+					prefixes := []string{base}
+					if nameNode := node.ChildByFieldName("name"); nameNode != nil {
+						qualifier = nodeText(nameNode, source)
+						if qualifier == "_" || qualifier == "." {
+							return
+						}
+						prefixes = []string{qualifier}
+						if base != qualifier {
+							prefixes = append(prefixes, base)
+						}
+					}
+					imports[qualifier] = prefixes
+				}
+			}
+			return
+		}
+		for i := uint(0); i < node.ChildCount(); i++ {
+			if child := node.Child(i); child != nil {
+				visit(child)
+			}
+		}
+	}
+	visit(root)
+	return imports
+}
+
+func goFunctionBindingNames(fn *tree_sitter.Node, source []byte) map[string]bool {
+	names := make(map[string]bool)
+	addIdentifiers := func(node *tree_sitter.Node) {
+		var visit func(*tree_sitter.Node)
+		visit = func(n *tree_sitter.Node) {
+			if n.Kind() == "identifier" {
+				names[nodeText(n, source)] = true
+				return
+			}
+			for i := uint(0); i < n.ChildCount(); i++ {
+				if child := n.Child(i); child != nil {
+					visit(child)
+				}
+			}
+		}
+		if node != nil {
+			visit(node)
+		}
+	}
+
+	var visit func(*tree_sitter.Node)
+	visit = func(node *tree_sitter.Node) {
+		if node != fn && node.Kind() == "func_literal" {
+			return
+		}
+		switch node.Kind() {
+		case "parameter_declaration", "variadic_parameter_declaration":
+			for i := uint(0); i < node.ChildCount(); i++ {
+				if child := node.Child(i); child != nil && child.Kind() == "identifier" {
+					names[nodeText(child, source)] = true
+				}
+			}
+		case "short_var_declaration", "range_clause":
+			addIdentifiers(node.ChildByFieldName("left"))
+		case "var_spec", "const_spec":
+			for i := uint(0); i < node.ChildCount(); i++ {
+				if child := node.Child(i); child != nil && child.Kind() == "identifier" {
+					names[nodeText(child, source)] = true
+				}
+			}
+		case "type_spec":
+			if name := node.ChildByFieldName("name"); name != nil {
+				names[nodeText(name, source)] = true
+			}
+		}
+		for i := uint(0); i < node.ChildCount(); i++ {
+			if child := node.Child(i); child != nil {
+				visit(child)
+			}
+		}
+	}
+	visit(fn)
+	return names
 }
 
 // goReceiverName returns the receiver variable name of a method (the `ds` in
@@ -189,15 +309,15 @@ var goBuiltins = map[string]bool{
 }
 
 // goResolveCallee resolves only when there is a single clear target.
-func goResolveCallee(edges []store.Edge, callee string, srcID int64, pkg string, isSelector bool, nameToID map[string]int64) []store.Edge {
+func goResolveCallee(edges []store.Edge, callee string, srcID int64, pkg string, isSelector bool, callLine int, nameToID map[string]int64) []store.Edge {
 	if dstID, found := nameToID[callee]; found && dstID != srcID {
-		return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+		return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 	}
 	if !isSelector {
 		// A same-package function (incl. a legitimate shadow of a builtin name)
 		// is an exact, precise match.
 		if dstID, found := nameToID[pkg+"."+callee]; found && dstID != srcID {
-			return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0})
+			return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 		}
 		// Past the exact match, a bare `callee(...)` is a Go builtin — never a
 		// graph symbol. Don't let the suffix fallback bind it to a stray
@@ -226,7 +346,7 @@ func goResolveCallee(edges []store.Edge, callee string, srcID int64, pkg string,
 		matches++
 	}
 	if matches == 1 {
-		return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0})
+		return appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: matchID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 	}
 	return edges
 }
@@ -259,7 +379,7 @@ func goFuncSymbol(node *tree_sitter.Node, source []byte, pkg string) store.Symbo
 	name := nodeText(node.ChildByFieldName("name"), source)
 	qname := pkg + "." + name
 	doc := goPrecedingComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindFunction,
@@ -269,6 +389,7 @@ func goFuncSymbol(node *tree_sitter.Node, source []byte, pkg string) store.Symbo
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
@@ -277,7 +398,7 @@ func goMethodSymbol(node *tree_sitter.Node, source []byte, pkg string) store.Sym
 	parts := strings.SplitN(qname, ".", 3)
 	name := parts[len(parts)-1]
 	doc := goPrecedingComment(node, source)
-	excerpt := bodyExcerpt(node, source)
+	excerpt, fullBody := bodyParts(node, source)
 	return store.Symbol{
 		Name:          name,
 		Kind:          store.KindMethod,
@@ -287,6 +408,7 @@ func goMethodSymbol(node *tree_sitter.Node, source []byte, pkg string) store.Sym
 		Signature:     firstLine(excerpt),
 		Docstring:     doc,
 		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
 	}
 }
 
@@ -344,7 +466,7 @@ func goTypeSymbols(node *tree_sitter.Node, source []byte, pkg string) []store.Sy
 		}
 		qname := pkg + "." + name
 		doc := goPrecedingComment(node, source)
-		excerpt := bodyExcerpt(child, source)
+		excerpt, fullBody := bodyParts(child, source)
 		result = append(result, store.Symbol{
 			Name:          name,
 			Kind:          kind,
@@ -354,6 +476,7 @@ func goTypeSymbols(node *tree_sitter.Node, source []byte, pkg string) []store.Sy
 			Signature:     firstLine(excerpt),
 			Docstring:     doc,
 			BodyExcerpt:   excerpt,
+			FullBody:      fullBody,
 		})
 	}
 	return result
@@ -417,17 +540,23 @@ func nodeText(node *tree_sitter.Node, source []byte) string {
 	return string(source[start:end])
 }
 
-func bodyExcerpt(node *tree_sitter.Node, source []byte) string {
+const bodyExcerptLimit = 2000
+
+func bodyParts(node *tree_sitter.Node, source []byte) (excerpt, fullBody string) {
 	start := node.StartByte()
 	end := node.EndByte()
 	if end > uint(len(source)) {
 		end = uint(len(source))
 	}
 	b := source[start:end]
-	if len(b) > 2000 {
-		return string(b[:2000]) + "\n// ... [truncated]"
+	if len(b) > bodyExcerptLimit {
+		cut := bodyExcerptLimit
+		for cut > 0 && !utf8.Valid(b[:cut]) {
+			cut--
+		}
+		return string(b[:cut]) + "\n// ... [truncated]", string(b)
 	}
-	return string(b)
+	return string(b), ""
 }
 
 func firstLine(s string) string {

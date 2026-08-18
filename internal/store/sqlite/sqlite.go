@@ -6,8 +6,10 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -65,7 +67,8 @@ func New(path, modelName string, dim int) (*Store, error) {
 			return nil, fmt.Errorf("sqlite create symbol_vec: %w", err)
 		}
 		for _, kv := range [][2]string{
-			{"schema_version", "1"},
+			{"schema_version", "2"},
+			{"index_content_version", "0"},
 			{"model_name", modelName},
 			{"embedding_dim", fmt.Sprintf("%d", dim)},
 		} {
@@ -86,7 +89,63 @@ func New(path, modelName string, dim int) (*Store, error) {
 			return nil, fmt.Errorf("index was built with model %q, current model is %q — please reindex with: contextmaxxer index <path>", storedModel, modelName)
 		}
 	}
+	// DECISION(2026-08): exact bodies live in a lazy side table. The searchable
+	// symbol row remains compact, while expand_context can hydrate the exact
+	// indexed snapshot. ASSUMES: generated indexes are rebuildable caches.
+	// REVISIT IF: side-table storage becomes material relative to vectors.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS symbol_bodies (
+		symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+		body TEXT NOT NULL,
+		sha256 TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite migrate symbol bodies: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE edges ADD COLUMN call_line INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite migrate edge call line: %w", err)
+	}
+	if _, err := db.Exec(`INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','2')`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite update schema version: %w", err)
+	}
+	var contentVersion string
+	err = db.QueryRow(`SELECT value FROM _meta WHERE key='index_content_version'`).Scan(&contentVersion)
+	if errors.Is(err, sql.ErrNoRows) || contentVersion == "" {
+		var fileCount int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&fileCount); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite inspect content version: %w", err)
+		}
+		initialVersion := "0"
+		if fileCount > 0 {
+			initialVersion = "1"
+		}
+		if _, err := db.Exec(`INSERT OR REPLACE INTO _meta(key,value) VALUES('index_content_version',?)`, initialVersion); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite initialize content version: %w", err)
+		}
+	} else if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite read content version: %w", err)
+	}
 	return &Store{db: db, path: path, dim: dim}, nil
+}
+
+func (s *Store) IndexContentVersion(ctx context.Context) (int, error) {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM _meta WHERE key='index_content_version'`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("get index content version: %w", err)
+	}
+	return version, nil
+}
+
+func (s *Store) SetIndexContentVersion(ctx context.Context, version int) error {
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO _meta(key,value) VALUES('index_content_version',?)`, version); err != nil {
+		return fmt.Errorf("set index content version: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) SaveFile(ctx context.Context, f *store.File) (int64, error) {
@@ -186,6 +245,13 @@ func (s *Store) SaveSymbol(ctx context.Context, sym *store.Symbol) (int64, error
 		id, sym.QualifiedName, sym.Signature, sym.Docstring, sym.BodyExcerpt); err != nil {
 		return 0, fmt.Errorf("save symbol fts: %w", err)
 	}
+	if sym.FullBody != "" {
+		if _, err = tx.ExecContext(ctx,
+			`INSERT INTO symbol_bodies(symbol_id,body,sha256) VALUES(?,?,?)`,
+			id, sym.FullBody, bodySHA256(sym.FullBody)); err != nil {
+			return 0, fmt.Errorf("save symbol full body: %w", err)
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("save symbol commit: %w", err)
 	}
@@ -215,6 +281,13 @@ func (s *Store) SaveSymbolBatch(ctx context.Context, symbols []store.Symbol) ([]
 	}
 	defer ftsStmt.Close()
 
+	bodyStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO symbol_bodies(symbol_id,body,sha256) VALUES(?,?,?)`)
+	if err != nil {
+		return nil, fmt.Errorf("save symbol batch body prepare: %w", err)
+	}
+	defer bodyStmt.Close()
+
 	ids := make([]int64, len(symbols))
 	for i, sym := range symbols {
 		res, err := symStmt.ExecContext(ctx,
@@ -227,6 +300,11 @@ func (s *Store) SaveSymbolBatch(ctx context.Context, symbols []store.Symbol) ([]
 		ids[i] = id
 		if _, err = ftsStmt.ExecContext(ctx, id, sym.QualifiedName, sym.Signature, sym.Docstring, sym.BodyExcerpt); err != nil {
 			return nil, fmt.Errorf("save symbol batch fts exec: %w", err)
+		}
+		if sym.FullBody != "" {
+			if _, err = bodyStmt.ExecContext(ctx, id, sym.FullBody, bodySHA256(sym.FullBody)); err != nil {
+				return nil, fmt.Errorf("save symbol batch body exec: %w", err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -317,8 +395,8 @@ func (s *Store) ListSymbolsMissingEmbedding(ctx context.Context) ([]store.Symbol
 
 func (s *Store) SaveEdge(ctx context.Context, e store.Edge) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO edges(src,dst,kind,weight) VALUES(?,?,?,?)`,
-		e.Src, e.Dst, e.Kind, e.Weight)
+		`INSERT OR IGNORE INTO edges(src,dst,kind,weight,call_line) VALUES(?,?,?,?,?)`,
+		e.Src, e.Dst, e.Kind, e.Weight, e.CallLine)
 	if err != nil {
 		return fmt.Errorf("save edge: %w", err)
 	}
@@ -333,14 +411,14 @@ func (s *Store) SaveEdgeBatch(ctx context.Context, edges []store.Edge) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO edges(src,dst,kind,weight) VALUES(?,?,?,?)`)
+		`INSERT OR IGNORE INTO edges(src,dst,kind,weight,call_line) VALUES(?,?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("save edge batch prepare: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, e := range edges {
-		if _, err := stmt.ExecContext(ctx, e.Src, e.Dst, e.Kind, e.Weight); err != nil {
+		if _, err := stmt.ExecContext(ctx, e.Src, e.Dst, e.Kind, e.Weight, e.CallLine); err != nil {
 			return fmt.Errorf("save edge batch exec: %w", err)
 		}
 	}
@@ -444,7 +522,7 @@ func (s *Store) SearchByVector(ctx context.Context, embedding []float32, topK in
 
 func (s *Store) GetEdges(ctx context.Context, symbolID int64) ([]store.Edge, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT src,dst,kind,weight FROM edges WHERE src=? OR dst=?`, symbolID, symbolID)
+		`SELECT src,dst,kind,weight,call_line FROM edges WHERE src=? OR dst=?`, symbolID, symbolID)
 	if err != nil {
 		return nil, fmt.Errorf("get edges: %w", err)
 	}
@@ -452,7 +530,7 @@ func (s *Store) GetEdges(ctx context.Context, symbolID int64) ([]store.Edge, err
 	var edges []store.Edge
 	for rows.Next() {
 		var e store.Edge
-		if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight); err != nil {
+		if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight, &e.CallLine); err != nil {
 			return nil, fmt.Errorf("get edges scan: %w", err)
 		}
 		edges = append(edges, e)
@@ -610,6 +688,37 @@ func (s *Store) GetSymbolsByIDs(ctx context.Context, ids []int64) ([]store.Symbo
 		return nil, fmt.Errorf("get symbols by ids: %w", err)
 	}
 	return syms, nil
+}
+
+// GetSymbolBody returns the exact body captured by the index. A legacy
+// truncated excerpt without its lossless side-table row is never passed off as
+// complete: callers get a reindex-required error instead.
+func (s *Store) GetSymbolBody(ctx context.Context, symbolID int64) (store.SymbolBody, error) {
+	var excerpt string
+	var fullBody, digest sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT s.body_excerpt,b.body,b.sha256
+		FROM symbols s
+		LEFT JOIN symbol_bodies b ON b.symbol_id=s.id
+		WHERE s.id=?`, symbolID).Scan(&excerpt, &fullBody, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.SymbolBody{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.SymbolBody{}, fmt.Errorf("get symbol body: %w", err)
+	}
+	if fullBody.Valid {
+		return store.SymbolBody{SymbolID: symbolID, Body: fullBody.String, SHA256: digest.String}, nil
+	}
+	if strings.HasSuffix(excerpt, "\n// ... [truncated]") {
+		return store.SymbolBody{}, fmt.Errorf("%w: symbol %d has a lossy legacy excerpt; run contextmaxxer index --force <repo>", store.ErrReindexRequired, symbolID)
+	}
+	return store.SymbolBody{SymbolID: symbolID, Body: excerpt, SHA256: bodySHA256(excerpt)}, nil
+}
+
+func bodySHA256(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 func scanSymbols(rows *sql.Rows, op string) ([]store.Symbol, error) {
