@@ -26,6 +26,8 @@ type toolPayload struct {
 		Name      string  `json:"name"`
 		Score     float32 `json:"score"`
 		Relevance float32 `json:"relevance"`
+		Lines     string  `json:"lines"`
+		Visible   string  `json:"visible_lines"`
 	} `json:"symbols"`
 	RetrievalHealth *struct {
 		Confidence  string  `json:"confidence"`
@@ -35,9 +37,15 @@ type toolPayload struct {
 
 // Result is one find_context response, reduced to what evaluation needs.
 type Result struct {
-	Names      []string
-	Scores     []float32
-	Relevance  []float32
+	Names     []string
+	Scores    []float32
+	Relevance []float32
+	// Lines is each symbol's full span ("120-380"); Visible is the span the
+	// response actually shows after evidence trimming. They differ exactly
+	// when the answer may have been trimmed away, which ranking metrics
+	// cannot see — see cmd/deepprobe.
+	Lines      []string
+	Visible    []string
 	Confidence string  // "" when the server omitted retrieval_health
 	TopGap     float32 // relative top1-top2 gap as the server computed it
 }
@@ -178,11 +186,15 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		Names:     make([]string, len(p.Symbols)),
 		Scores:    make([]float32, len(p.Symbols)),
 		Relevance: make([]float32, len(p.Symbols)),
+		Lines:     make([]string, len(p.Symbols)),
+		Visible:   make([]string, len(p.Symbols)),
 	}
 	for i, sym := range p.Symbols {
 		out.Names[i] = sym.Name
 		out.Scores[i] = sym.Score
 		out.Relevance[i] = sym.Relevance
+		out.Lines[i] = sym.Lines
+		out.Visible[i] = sym.Visible
 	}
 	if p.RetrievalHealth != nil {
 		out.Confidence = p.RetrievalHealth.Confidence
