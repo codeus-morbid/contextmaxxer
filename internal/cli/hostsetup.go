@@ -26,11 +26,16 @@ const (
 const adoptionRule = `When you need to find code, understand how something works, trace a call path, or
 find the right file to edit in this repository, call the find_context MCP tool
 FIRST — before grep, glob, or opening files. It returns ranked symbols with
-line-numbered bodies and caller/callee context, usually in one call. Phrase the
-query in the vocabulary the code would use (mechanism nouns/verbs, likely
-identifier words), one mechanism per query. Cite file:line from its output; only
+line-numbered bodies and static caller/callee candidates. Before claiming a
+runtime path, prove its branch, feature flag, protocol, or dispatch discriminator.
+Phrase queries in code vocabulary, one mechanism per query. Cite file:line; only
 open a file if find_context lacks the detail. Use grep only for literal-string
-or filename searches, or when find_context returns nothing.`
+or filename searches, or when find_context returns nothing. Leave tuning knobs
+unset during normal exploration. When a relevant excerpt or compact result omits
+required code, call expand_context with that response's request_id and one rank
+instead of repeating semantic search. If expansion returns status:more, call
+continue_context with next_cursor until status:complete; a partial page is never
+the full symbol and must not be replaced with grep or a file read.`
 
 func mcpArgs(dbPath string) []string {
 	return []string{"mcp", "--index", dbPath, "--reranker", "jina-reranker-v1-tiny-en", "--adaptive-rerank", "--watch"}
@@ -243,49 +248,110 @@ func writeCodex(absRoot, cmdPath, dbPath string) ([]string, error) {
 	return touched, nil
 }
 
-// appendCodexServer adds the [mcp_servers.contextmaxxer] TOML table if absent.
-// Text-level append on purpose: we never rewrite the user's existing config,
-// so a TOML parser dependency is not worth the risk surface. If the section
-// exists (whatever its content), we leave it alone.
+// appendCodexServer converges the managed command/args keys in the
+// [mcp_servers.contextmaxxer] TOML table while preserving every unrelated key
+// and section. Text-level editing keeps TOML dependencies out of the installer.
 func appendCodexServer(path, cmdPath, dbPath string) (bool, error) {
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
-	if strings.Contains(string(existing), "[mcp_servers.contextmaxxer]") {
-		return false, nil
-	}
 	var args []string
 	for _, a := range mcpArgs(dbPath) {
 		args = append(args, fmt.Sprintf("%q", a))
 	}
-	block := fmt.Sprintf("\n[mcp_servers.contextmaxxer]\ncommand = %q\nargs = [%s]\n",
-		cmdPath, strings.Join(args, ", "))
+	commandLine := fmt.Sprintf("command = %q", cmdPath)
+	argsLine := fmt.Sprintf("args = [%s]", strings.Join(args, ", "))
+	header := "[mcp_servers.contextmaxxer]"
+	out := string(existing)
+	start := findLine(out, header)
+	if start >= 0 {
+		end := len(out)
+		if rel := strings.Index(out[start+len(header):], "\n["); rel >= 0 {
+			end = start + len(header) + rel + 1
+		}
+		section := out[start:end]
+		section = upsertSectionLine(section, "command", commandLine)
+		section = upsertSectionLine(section, "args", argsLine)
+		updated := out[:start] + section + out[end:]
+		if updated == out {
+			return false, nil
+		}
+		return true, os.WriteFile(path, []byte(updated), 0644)
+	}
+
+	block := fmt.Sprintf("\n%s\n%s\n%s\n", header, commandLine, argsLine)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return false, err
 	}
-	out := string(existing)
 	if out != "" && !strings.HasSuffix(out, "\n") {
 		out += "\n"
 	}
 	return true, os.WriteFile(path, []byte(out+block), 0644)
 }
 
-// appendMarkedBlock appends a marker-delimited block if the marker is absent;
-// an existing block (possibly hand-edited) is left untouched.
+func findLine(text, want string) int {
+	offset := 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if strings.TrimSpace(line) == want {
+			return offset
+		}
+		offset += len(line)
+	}
+	return -1
+}
+
+func upsertSectionLine(section, key, replacement string) string {
+	lines := strings.SplitAfter(section, "\n")
+	prefix := key + " ="
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			newline := ""
+			if strings.HasSuffix(line, "\r\n") {
+				newline = "\r\n"
+			} else if strings.HasSuffix(line, "\n") {
+				newline = "\n"
+			}
+			lines[i] = replacement + newline
+			return strings.Join(lines, "")
+		}
+	}
+	if !strings.HasSuffix(section, "\n") {
+		section += "\n"
+	}
+	return section + replacement + "\n"
+}
+
+// appendMarkedBlock appends a marker-delimited managed block when absent and
+// replaces only that block when its generated content changes.
 func appendMarkedBlock(path, startMark, endMark, body string) (bool, error) {
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
-	if strings.Contains(string(existing), startMark) {
-		return false, nil
-	}
 	out := string(existing)
+	block := startMark + "\n" + body + endMark + "\n"
+	if start := strings.Index(out, startMark); start >= 0 {
+		endRel := strings.Index(out[start+len(startMark):], endMark)
+		if endRel < 0 {
+			return false, fmt.Errorf("managed block has %q without %q", startMark, endMark)
+		}
+		end := start + len(startMark) + endRel + len(endMark)
+		if end < len(out) && out[end] == '\r' {
+			end++
+		}
+		if end < len(out) && out[end] == '\n' {
+			end++
+		}
+		updated := out[:start] + block + out[end:]
+		if updated == out {
+			return false, nil
+		}
+		return true, os.WriteFile(path, []byte(updated), 0644)
+	}
 	if out != "" && !strings.HasSuffix(out, "\n") {
 		out += "\n"
 	}
-	block := startMark + "\n" + body + endMark + "\n"
 	if out != "" {
 		block = "\n" + block
 	}

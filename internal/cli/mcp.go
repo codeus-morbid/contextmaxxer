@@ -19,6 +19,7 @@ import (
 	mcpsrv "github.com/codeus-morbid/contextmaxxer/internal/mcp"
 	"github.com/codeus-morbid/contextmaxxer/internal/releasecfg"
 	"github.com/codeus-morbid/contextmaxxer/internal/rerank"
+	"github.com/codeus-morbid/contextmaxxer/internal/store"
 	"github.com/codeus-morbid/contextmaxxer/internal/store/sqlite"
 )
 
@@ -68,6 +69,13 @@ func RunMCP(ctx context.Context, args []string, log *slog.Logger) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+	contentVersion, err := st.IndexContentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("inspect index content: %w", err)
+	}
+	if contentVersion < store.CurrentIndexContentVersion {
+		return fmt.Errorf("index content format v%d cannot provide lossless bodies and exact call lines; rebuild it with: contextmaxxer --force index <repo>", contentVersion)
+	}
 
 	embedder, err := embed.NewOnnxEmbedder(ctx, embed.Config{
 		ModelName: *modelName,

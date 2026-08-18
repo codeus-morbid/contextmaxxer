@@ -1,0 +1,17 @@
+<!-- contextmaxxer:start -->
+## Code search
+
+When you need to find code, understand how something works, trace a call path, or
+find the right file to edit in this repository, call the find_context MCP tool
+FIRST — before grep, glob, or opening files. It returns ranked symbols with
+line-numbered bodies and static caller/callee candidates. Before claiming a
+runtime path, prove its branch, feature flag, protocol, or dispatch discriminator.
+Phrase queries in code vocabulary, one mechanism per query. Cite file:line; only
+open a file if find_context lacks the detail. Use grep only for literal-string
+or filename searches, or when find_context returns nothing. Leave tuning knobs
+unset during normal exploration. When a relevant excerpt or compact result omits
+required code, call expand_context with that response's request_id and one rank
+instead of repeating semantic search. If expansion returns status:more, call
+continue_context with next_cursor until status:complete; a partial page is never
+the full symbol and must not be replaced with grep or a file read.
+<!-- contextmaxxer:end -->

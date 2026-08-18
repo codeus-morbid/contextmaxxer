@@ -120,6 +120,23 @@ func TestAppendCodexServerIdempotent(t *testing.T) {
 	if err != nil || changed {
 		t.Fatalf("second append must be a no-op: changed=%v err=%v", changed, err)
 	}
+
+	changed, err = appendCodexServer(path, "/new/ctxm", "/new/repo/index.db")
+	if err != nil || !changed {
+		t.Fatalf("stale managed keys must update: changed=%v err=%v", changed, err)
+	}
+	data, _ = os.ReadFile(path)
+	updated := string(data)
+	if !strings.Contains(updated, `command = "/new/ctxm"`) || !strings.Contains(updated, `"/new/repo/index.db"`) {
+		t.Fatal("managed command/args were not updated")
+	}
+	if !strings.Contains(updated, "[mcp_servers.other]") {
+		t.Fatal("unrelated section lost during managed-key update")
+	}
+	changed, err = appendCodexServer(path, "/new/ctxm", "/new/repo/index.db")
+	if err != nil || changed {
+		t.Fatalf("updated section must become idempotent: changed=%v err=%v", changed, err)
+	}
 }
 
 func TestAppendMarkedBlockIdempotent(t *testing.T) {
@@ -140,6 +157,44 @@ func TestAppendMarkedBlockIdempotent(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if !strings.HasPrefix(string(data), "# My agents file") {
 		t.Fatal("existing content lost")
+	}
+
+	changed, err = appendMarkedBlock(path, "<!-- s -->", "<!-- e -->", "new body\n")
+	if err != nil || !changed {
+		t.Fatalf("managed block update: changed=%v err=%v", changed, err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "<!-- s -->\nnew body\n<!-- e -->") || strings.Contains(string(data), "\nbody\n") {
+		t.Fatal("managed block content was not replaced")
+	}
+	if !strings.HasPrefix(string(data), "# My agents file") {
+		t.Fatal("content outside managed block lost")
+	}
+}
+
+func TestAppendMarkedBlockRejectsUnclosedManagedBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(path, []byte("before\n<!-- s -->\nstale\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := appendMarkedBlock(path, "<!-- s -->", "<!-- e -->", "body\n")
+	if err == nil || !strings.Contains(err.Error(), "without") {
+		t.Fatalf("want unclosed-block error, got %v", err)
+	}
+}
+
+func TestAdoptionRuleUsesExactExpansionForMissingBodies(t *testing.T) {
+	for _, fragment := range []string{
+		"Leave tuning knobs",
+		"call expand_context",
+		"prove its branch, feature flag, protocol, or dispatch discriminator",
+		"continue_context",
+		"until status:complete",
+		"instead of repeating semantic search",
+	} {
+		if !strings.Contains(adoptionRule, fragment) {
+			t.Fatalf("adoption rule missing %q", fragment)
+		}
 	}
 }
 

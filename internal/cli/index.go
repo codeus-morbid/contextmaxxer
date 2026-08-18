@@ -11,6 +11,7 @@ import (
 	"github.com/codeus-morbid/contextmaxxer/internal/embed"
 	"github.com/codeus-morbid/contextmaxxer/internal/index"
 	"github.com/codeus-morbid/contextmaxxer/internal/index/languages"
+	"github.com/codeus-morbid/contextmaxxer/internal/store"
 	"github.com/codeus-morbid/contextmaxxer/internal/store/sqlite"
 )
 
@@ -59,6 +60,16 @@ func RunIndex(ctx context.Context, args []string, log *slog.Logger, indexPath st
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+	contentVersion, err := st.IndexContentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("inspect index content: %w", err)
+	}
+	if shouldForceReindex(forceReindex, contentVersion) {
+		if !forceReindex {
+			fmt.Printf("Index upgrade: content v%d -> v%d requires one full reindex\n", contentVersion, store.CurrentIndexContentVersion)
+		}
+		forceReindex = true
+	}
 
 	parser, err := index.NewTreeSitterParser()
 	if err != nil {
@@ -129,4 +140,8 @@ func RunIndex(ctx context.Context, args []string, log *slog.Logger, indexPath st
 		log.Warn("vec cache pre-build failed (queries will build it lazily)", "err", err)
 	}
 	return nil
+}
+
+func shouldForceReindex(requested bool, contentVersion int) bool {
+	return requested || contentVersion < store.CurrentIndexContentVersion
 }
