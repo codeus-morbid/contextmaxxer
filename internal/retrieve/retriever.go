@@ -161,6 +161,14 @@ type Reranker interface {
 	Rerank(ctx context.Context, query string, candidates []ScoredResult) ([]ScoredResult, error)
 }
 
+// TextScorer is an optional Reranker capability: score free-form texts against
+// the query. Evidence-window selection uses it when the reranker offers it,
+// because a cross-encoder reads the query and the window together, while the
+// bi-encoder can only compare two vectors built in ignorance of each other.
+type TextScorer interface {
+	ScoreTexts(ctx context.Context, query string, docs []string) ([]float32, error)
+}
+
 type Ranker interface {
 	Rank(query string, candidates []ScoredResult) []ScoredResult
 }

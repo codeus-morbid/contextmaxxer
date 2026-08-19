@@ -457,7 +457,7 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	// response is built (keeps the answer, drops the bulk of large functions).
 	tEv := time.Now()
 	if !req.PreserveFullBodies {
-		applyEvidenceSpans(ctx, r, qvec, selected)
+		applyEvidenceSpans(ctx, r, req.Query, qvec, selected)
 	} else {
 		for i := range selected {
 			selected[i].BodyStartLine = selected[i].StartLine

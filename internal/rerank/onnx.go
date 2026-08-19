@@ -273,6 +273,12 @@ func (r *OnnxReranker) Rerank(ctx context.Context, query string, candidates []re
 	return out, nil
 }
 
+// ScoreTexts implements retrieve.TextScorer so evidence-window selection can
+// reuse the loaded cross-encoder on arbitrary spans of a body.
+func (r *OnnxReranker) ScoreTexts(ctx context.Context, query string, docs []string) ([]float32, error) {
+	return r.score(ctx, query, docs)
+}
+
 func (r *OnnxReranker) score(_ context.Context, query string, docs []string) ([]float32, error) {
 	scores := make([]float32, len(docs))
 	for start := 0; start < len(docs); start += r.batchSize {

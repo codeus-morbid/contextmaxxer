@@ -859,7 +859,7 @@ func TestApplyEvidenceSpansMarksVisibleExcerpt(t *testing.T) {
 	}}
 	r := &Retriever{embedder: &mockEmbedder{}}
 
-	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+	applyEvidenceSpans(context.Background(), r, "", []float32{1, 0, 0, 0}, results)
 
 	require.Equal(t, "excerpt", results[0].Detail)
 	require.Equal(t, 100, results[0].BodyStartLine)
@@ -908,7 +908,7 @@ func TestApplyEvidenceSpansWindowsTheLosslessBody(t *testing.T) {
 		Body: head, Detail: "full",
 	}}
 
-	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+	applyEvidenceSpans(context.Background(), r, "", []float32{1, 0, 0, 0}, results)
 
 	require.Contains(t, results[0].Body, "NEEDLE", "the window must come from the lossless body")
 	require.Greater(t, results[0].BodyStartLine, 130, "the head is not where the answer was")
@@ -932,7 +932,82 @@ func TestApplyEvidenceSpansRestoresExcerptWhenScoringFails(t *testing.T) {
 		Body: head, Detail: "full",
 	}}
 
-	applyEvidenceSpans(context.Background(), r, []float32{1, 0, 0, 0}, results)
+	applyEvidenceSpans(context.Background(), r, "", []float32{1, 0, 0, 0}, results)
 
 	require.Equal(t, head, results[0].Body, "a failed scoring pass must not leave the body hydrated")
+}
+
+// needleScorer is a Reranker that also scores free-form texts, standing in for
+// the loaded cross-encoder.
+type needleScorer struct {
+	needle string
+	fail   bool
+}
+
+func (s *needleScorer) Rerank(_ context.Context, _ string, c []ScoredResult) ([]ScoredResult, error) {
+	return c, nil
+}
+
+func (s *needleScorer) ScoreTexts(_ context.Context, _ string, docs []string) ([]float32, error) {
+	if s.fail {
+		return nil, errors.New("scorer unavailable")
+	}
+	out := make([]float32, len(docs))
+	for i, d := range docs {
+		if strings.Contains(d, s.needle) {
+			out[i] = 1.0
+		}
+	}
+	return out, nil
+}
+
+func decoyBody() string {
+	return strings.Repeat("head\n", 30) + "DECOY here\n" + strings.Repeat("mid\n", 18) +
+		"NEEDLE here\n" + strings.Repeat("tail\n", 10)
+}
+
+// The cross-encoder reads query and window together; the bi-encoder compares
+// vectors built in ignorance of each other. When they disagree the
+// cross-encoder must decide, or the second stage is decorative.
+func TestApplyEvidenceSpansPrefersCrossEncoderWindow(t *testing.T) {
+	t.Setenv("CONTEXTMAXXER_EVIDENCE_CE_TOPK", "0") // score every window
+	full := decoyBody()
+	r := &Retriever{
+		embedder: &needleEmbedder{needle: "DECOY"},
+		reranker: &needleScorer{needle: "NEEDLE"},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: strings.Repeat("head\n", 30), FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 160,
+		Body: strings.Repeat("head\n", 30), Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, "where is the needle", []float32{1, 0, 0, 0}, results)
+
+	require.Contains(t, results[0].Body, "NEEDLE", "the cross-encoder pick must win")
+	require.NotContains(t, results[0].Body, "DECOY")
+}
+
+// A cross-encoder failure must cost the refinement, not the trim.
+func TestApplyEvidenceSpansFallsBackToBiEncoderWindow(t *testing.T) {
+	t.Setenv("CONTEXTMAXXER_EVIDENCE_CE_TOPK", "0")
+	full := decoyBody()
+	r := &Retriever{
+		embedder: &needleEmbedder{needle: "DECOY"},
+		reranker: &needleScorer{needle: "NEEDLE", fail: true},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: strings.Repeat("head\n", 30), FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 160,
+		Body: strings.Repeat("head\n", 30), Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, "where is the needle", []float32{1, 0, 0, 0}, results)
+
+	require.Contains(t, results[0].Body, "DECOY", "the bi-encoder choice must survive")
+	require.Equal(t, "excerpt", results[0].Detail)
 }
