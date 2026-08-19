@@ -13,11 +13,12 @@ import (
 )
 
 type mockStore struct {
-	symbols   []store.Symbol
-	edges     []store.Edge
-	ids       []int64
-	filePaths map[int64]string
-	ftsResult []store.ScoredSymbol
+	symbols       []store.Symbol
+	edges         []store.Edge
+	ids           []int64
+	filePaths     map[int64]string
+	ftsResult     []store.ScoredSymbol
+	bodyFTSResult []store.ScoredSymbol
 }
 
 func (m *mockStore) SearchByVectorScored(_ context.Context, _ []float32, k int) ([]store.ScoredSymbol, error) {
@@ -1010,4 +1011,8 @@ func TestApplyEvidenceSpansFallsBackToBiEncoderWindow(t *testing.T) {
 
 	require.Contains(t, results[0].Body, "DECOY", "the bi-encoder choice must survive")
 	require.Equal(t, "excerpt", results[0].Detail)
+}
+
+func (m *mockStore) SearchByBodyText(_ context.Context, _ string, _ int) ([]store.ScoredSymbol, error) {
+	return m.bodyFTSResult, nil
 }

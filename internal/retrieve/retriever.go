@@ -182,6 +182,7 @@ type IntentRanker interface {
 type Store interface {
 	SearchByVectorScored(ctx context.Context, vec []float32, k int) ([]store.ScoredSymbol, error)
 	SearchByText(ctx context.Context, query string, k int) ([]store.ScoredSymbol, error)
+	SearchByBodyText(ctx context.Context, query string, k int) ([]store.ScoredSymbol, error)
 	GetSymbolsByIDs(ctx context.Context, ids []int64) ([]store.Symbol, error)
 	GetSymbolBody(ctx context.Context, symbolID int64) (store.SymbolBody, error)
 	GetFilesByIDs(ctx context.Context, ids []int64) (map[int64]string, error)

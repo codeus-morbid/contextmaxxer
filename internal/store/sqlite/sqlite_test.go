@@ -638,3 +638,82 @@ func TestStore_GetEmbeddingsByIDs(t *testing.T) {
 	require.Len(t, partial, 1)
 	require.Contains(t, partial, ids[0])
 }
+
+// The head FTS index stops at body_excerpt, so a term living past the cap was
+// unreachable by keyword search — the tail of a capped symbol is invisible to
+// every channel (measured: ~5% of symbols, ~53% of their code).
+func TestStore_SearchByTextReachesPastTheBodyCap(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fid, err := s.SaveFile(ctx, &store.File{Path: "/deep.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+
+	full := "func Huge() {\n" + strings.Repeat("filler()\n", 400) + "quorumRecalibration()\n}\n"
+	require.Greater(t, len(full), 2000)
+	excerpt := full[:2000] + "\n// ... [truncated]"
+	require.NotContains(t, excerpt, "quorumRecalibration")
+
+	_, err = s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fid, Name: "Huge", Kind: store.KindFunction, QualifiedName: "pkg.Huge",
+		BodyExcerpt: excerpt, FullBody: full,
+	}})
+	require.NoError(t, err)
+
+	head, err := s.SearchByText(ctx, "quorumRecalibration", 10)
+	require.NoError(t, err)
+	require.Empty(t, head, "the head index cannot see past the cap")
+
+	deep, err := s.SearchByBodyText(ctx, "quorumRecalibration", 10)
+	require.NoError(t, err)
+	require.Len(t, deep, 1)
+	require.Equal(t, "pkg.Huge", deep[0].QualifiedName)
+}
+
+// Reindexing a file drops its symbols; the body index must drop with them or a
+// stale rowid keeps answering for code that no longer exists.
+func TestStore_DeleteSymbolsByFileClearsBodyIndex(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fid, err := s.SaveFile(ctx, &store.File{Path: "/gone.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+
+	full := "func Huge() {\n" + strings.Repeat("filler()\n", 400) + "quorumRecalibration()\n}\n"
+	_, err = s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fid, Name: "Huge", Kind: store.KindFunction, QualifiedName: "pkg.Huge",
+		BodyExcerpt: full[:2000] + "\n// ... [truncated]", FullBody: full,
+	}})
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteSymbolsByFile(ctx, fid))
+
+	hits, err := s.SearchByBodyText(ctx, "quorumRecalibration", 10)
+	require.NoError(t, err)
+	require.Empty(t, hits)
+}
+
+// DeleteFile cleaned symbol_vec by hand but left both FTS indexes pointing at
+// cascaded-away symbols, which then matched queries and disappeared at the
+// JOIN — invisible in the results, but still spending the result limit.
+func TestStore_DeleteFileClearsSearchIndexes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fid, err := s.SaveFile(ctx, &store.File{Path: "/dropped.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+
+	full := "func Huge() {\n" + strings.Repeat("filler()\n", 400) + "quorumRecalibration()\n}\n"
+	_, err = s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fid, Name: "Huge", Kind: store.KindFunction, QualifiedName: "pkg.HugeDropped",
+		Docstring: "planStabilization of the write path", BodyExcerpt: full[:2000] + "\n// ... [truncated]", FullBody: full,
+	}})
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteFile(ctx, fid))
+
+	// Asserted against the FTS tables directly: SearchByText joins symbols, and
+	// that join hides stale entries instead of reporting them.
+	var headTerms, bodyTerms int
+	require.NoError(t, s.db.QueryRow(
+		`SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH ?`, "planStabilization").Scan(&headTerms))
+	require.Zero(t, headTerms, "head index still holds terms of a deleted file")
+	require.NoError(t, s.db.QueryRow(
+		`SELECT count(*) FROM symbol_body_fts WHERE symbol_body_fts MATCH ?`, "quorumRecalibration").Scan(&bodyTerms))
+	require.Zero(t, bodyTerms, "body index still holds terms of a deleted file")
+}

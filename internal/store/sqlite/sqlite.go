@@ -24,6 +24,10 @@ import (
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
 )
 
+// bodyFTSVersion gates the one-time build of symbol_body_fts on an index that
+// predates it. Bump it to force every index to rebuild that table.
+const bodyFTSVersion = "1"
+
 type Store struct {
 	db    *sql.DB
 	path  string
@@ -104,6 +108,31 @@ func New(path, modelName string, dim int) (*Store, error) {
 	if _, err := db.Exec(`ALTER TABLE edges ADD COLUMN call_line INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite migrate edge call line: %w", err)
+	}
+	// DECISION(2026-08): keyword search reads body_excerpt, so the tail of a
+	// capped symbol is invisible to every channel (measured: ~5% of symbols,
+	// ~53% of their code). Index the lossless bodies separately, as external
+	// content so the text is not stored twice. ASSUMES: symbol_bodies holds a
+	// row for exactly the capped symbols. REVISIT IF: the cap goes away.
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS symbol_body_fts USING fts5(
+		body, content='symbol_bodies', content_rowid='symbol_id'
+	)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite migrate body fts: %w", err)
+	}
+	// Existing indexes already carry the bodies, so this costs a rebuild pass
+	// and no re-embedding. The flag makes it run once per index.
+	var bodyFTSBuilt string
+	_ = db.QueryRow(`SELECT value FROM _meta WHERE key='body_fts_version'`).Scan(&bodyFTSBuilt)
+	if bodyFTSBuilt != bodyFTSVersion {
+		if _, err := db.Exec(`INSERT INTO symbol_body_fts(symbol_body_fts) VALUES('rebuild')`); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite build body fts: %w", err)
+		}
+		if _, err := db.Exec(`INSERT OR REPLACE INTO _meta(key,value) VALUES('body_fts_version',?)`, bodyFTSVersion); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite mark body fts: %w", err)
+		}
 	}
 	if _, err := db.Exec(`INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','2')`); err != nil {
 		_ = db.Close()
@@ -196,6 +225,19 @@ func (s *Store) DeleteFile(ctx context.Context, id int64) error {
 		`DELETE FROM symbol_vec WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?)`, id); err != nil {
 		return fmt.Errorf("delete file vectors: %w", err)
 	}
+	// Neither does the cascade reach the FTS indexes, and they must be cleared
+	// while their content rows still exist: an external-content table reads the
+	// row to remove its terms. Deleting the file first leaves both indexes
+	// matching symbols that no longer exist, which then vanish at the JOIN
+	// while still consuming the result limit.
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM symbol_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id=?)`, id); err != nil {
+		return fmt.Errorf("delete file fts: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM symbol_body_fts WHERE rowid IN (SELECT symbol_id FROM symbol_bodies WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, id); err != nil {
+		return fmt.Errorf("delete file body fts: %w", err)
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("delete file: %w", err)
@@ -251,6 +293,11 @@ func (s *Store) SaveSymbol(ctx context.Context, sym *store.Symbol) (int64, error
 			id, sym.FullBody, bodySHA256(sym.FullBody)); err != nil {
 			return 0, fmt.Errorf("save symbol full body: %w", err)
 		}
+		if _, err = tx.ExecContext(ctx,
+			`INSERT INTO symbol_body_fts(rowid, body) VALUES(?,?)`,
+			id, sym.FullBody); err != nil {
+			return 0, fmt.Errorf("save symbol body fts: %w", err)
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("save symbol commit: %w", err)
@@ -288,6 +335,13 @@ func (s *Store) SaveSymbolBatch(ctx context.Context, symbols []store.Symbol) ([]
 	}
 	defer bodyStmt.Close()
 
+	bodyFTSStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO symbol_body_fts(rowid, body) VALUES(?,?)`)
+	if err != nil {
+		return nil, fmt.Errorf("save symbol batch body fts prepare: %w", err)
+	}
+	defer bodyFTSStmt.Close()
+
 	ids := make([]int64, len(symbols))
 	for i, sym := range symbols {
 		res, err := symStmt.ExecContext(ctx,
@@ -304,6 +358,9 @@ func (s *Store) SaveSymbolBatch(ctx context.Context, symbols []store.Symbol) ([]
 		if sym.FullBody != "" {
 			if _, err = bodyStmt.ExecContext(ctx, id, sym.FullBody, bodySHA256(sym.FullBody)); err != nil {
 				return nil, fmt.Errorf("save symbol batch body exec: %w", err)
+			}
+			if _, err = bodyFTSStmt.ExecContext(ctx, id, sym.FullBody); err != nil {
+				return nil, fmt.Errorf("save symbol batch body fts exec: %w", err)
 			}
 		}
 	}
@@ -323,6 +380,13 @@ func (s *Store) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM symbol_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id=?)`, fileID); err != nil {
 		return fmt.Errorf("delete symbols fts: %w", err)
+	}
+	// Must run while symbol_bodies still holds the rows: an external-content
+	// FTS5 table reads the content row to remove its terms, and a cascade
+	// delete would leave the index pointing at bodies that no longer exist.
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM symbol_body_fts WHERE rowid IN (SELECT symbol_id FROM symbol_bodies WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, fileID); err != nil {
+		return fmt.Errorf("delete symbols body fts: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM symbol_vec WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?)`, fileID); err != nil {
@@ -812,15 +876,43 @@ func (s *Store) SearchByText(ctx context.Context, query string, k int) ([]store.
 	if ftsQuery == "" {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT f.rowid, bm25(symbol_fts),
-		       s.id, s.file_id, s.name, s.kind, s.qualified_name,
-		       s.start_line, s.end_line, s.signature, s.docstring, s.body_excerpt
-		FROM symbol_fts f
-		JOIN symbols s ON s.id = f.rowid
-		WHERE symbol_fts MATCH ?
-		ORDER BY rank
-		LIMIT ?`, ftsQuery, k)
+	return s.ftsSearch(ctx, headFTSSQL, ftsQuery, k)
+}
+
+// SearchByBodyText searches the lossless bodies. It is a separate ranking, not
+// extra rows on SearchByText's: seeding fuses channels by rank, so appending
+// these to the head list would hand them the worst ranks and a vote near zero
+// however well they matched. Callers fuse it as its own channel.
+func (s *Store) SearchByBodyText(ctx context.Context, query string, k int) ([]store.ScoredSymbol, error) {
+	ftsQuery := preprocessFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
+	return s.ftsSearch(ctx, bodyFTSSQL, ftsQuery, k)
+}
+
+const headFTSSQL = `
+	SELECT f.rowid, bm25(symbol_fts),
+	       s.id, s.file_id, s.name, s.kind, s.qualified_name,
+	       s.start_line, s.end_line, s.signature, s.docstring, s.body_excerpt
+	FROM symbol_fts f
+	JOIN symbols s ON s.id = f.rowid
+	WHERE symbol_fts MATCH ?
+	ORDER BY rank
+	LIMIT ?`
+
+const bodyFTSSQL = `
+	SELECT f.rowid, bm25(symbol_body_fts),
+	       s.id, s.file_id, s.name, s.kind, s.qualified_name,
+	       s.start_line, s.end_line, s.signature, s.docstring, s.body_excerpt
+	FROM symbol_body_fts f
+	JOIN symbols s ON s.id = f.rowid
+	WHERE symbol_body_fts MATCH ?
+	ORDER BY rank
+	LIMIT ?`
+
+func (s *Store) ftsSearch(ctx context.Context, sqlText, ftsQuery string, k int) ([]store.ScoredSymbol, error) {
+	rows, err := s.db.QueryContext(ctx, sqlText, ftsQuery, k)
 	if err != nil {
 		return nil, fmt.Errorf("search by text: %w", err)
 	}

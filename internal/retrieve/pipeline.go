@@ -3,7 +3,9 @@ package retrieve
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -19,6 +21,30 @@ const rrfK = 60
 // (1.0 = classic equal-weight RRF). Package-level so eval can sweep it;
 // promote to a Request field once the value is settled.
 var DefaultFTSWeight float32 = 1.0
+
+// DefaultBodyFTSWeight scales the lossless-body channel, swept on prometheus
+// deep-content recall against the gate:
+//
+//	0.0  recall 0.47  (channel off)
+//	0.8  recall 0.53  every gate metric unmoved
+//	1.0  recall 0.68  false confidence 0.06->0.12 (contextmaxxer), 0.00->0.06
+//	                  (newtonsoft, php-slim); Hit@1/@5 within noise
+//	1.5  recall 0.72  breaks Hit@1 outright (prometheus 0.93->0.88)
+//
+// DECISION(2026-08): ship 0.8, the value that costs nothing measurable. 1.0 is
+// tempting but its confidence cost is not yet separable from stale calibration
+// — adding a seed channel changes ranking, and the weak-match floor was
+// calibrated without it. REVISIT IF: confcal is re-run at 1.0 and false
+// confidence returns to baseline.
+var DefaultBodyFTSWeight float32 = 0.8
+
+func init() {
+	if v := os.Getenv("CONTEXTMAXXER_BODY_FTS_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f >= 0 {
+			DefaultBodyFTSWeight = float32(f)
+		}
+	}
+}
 
 // DECISION: 0 means no cap. Agent doing manual exploration spends
 // 10-30k tokens on Glob+Read+Grep — even our verbose answer mode
@@ -106,6 +132,23 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		ftsW := DefaultFTSWeight
 		for rank, s := range fSeeds {
 			rrfScores[s.ID] += ftsW / float32(rrfK+rank+1)
+			if _, ok := originMap[s.ID]; !ok {
+				originMap[s.ID] = &seedOrigin{}
+			}
+			originMap[s.ID].fromF = true
+		}
+		// DECISION(2026-08): the lossless bodies are a third channel with their
+		// own ranking. The head index stops at body_excerpt, so a term living
+		// past the cap is unreachable through it — the only way such code gets
+		// seeded at all. Weighted below head FTS because a long body matches
+		// common tokens easily. REVISIT IF: lexical slices regress on the gate.
+		bSeeds, err := r.store.SearchByBodyText(ctx, req.Query, req.SeedK)
+		if err != nil {
+			return Result{}, fmt.Errorf("body fts seed search: %w", err)
+		}
+		bodyW := DefaultBodyFTSWeight
+		for rank, s := range bSeeds {
+			rrfScores[s.ID] += bodyW / float32(rrfK+rank+1)
 			if _, ok := originMap[s.ID]; !ok {
 				originMap[s.ID] = &seedOrigin{}
 			}

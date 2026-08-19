@@ -70,3 +70,10 @@ CREATE TABLE IF NOT EXISTS feedback (
   signal TEXT NOT NULL,
   ts INTEGER NOT NULL
 );
+
+-- Full bodies indexed for keyword search. External content over symbol_bodies:
+-- the tail of a capped symbol is otherwise unreachable by every channel, and
+-- external content means the text is indexed without a second copy.
+CREATE VIRTUAL TABLE IF NOT EXISTS symbol_body_fts USING fts5(
+  body, content='symbol_bodies', content_rowid='symbol_id'
+);
