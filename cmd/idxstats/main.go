@@ -28,6 +28,10 @@ func main() {
 			fmt.Printf("%-60s truncated=%-8d (%.1f%% of symbols)  visible=%dKB hidden=%dKB (%.1f%% of their code unsearchable)\n",
 				"", t.n, 100*ratio(t.n, s), t.visible/1024, t.hidden/1024,
 				100*ratio(t.hidden, t.visible+t.hidden))
+			if t.chunks > 0 {
+				fmt.Printf("%-60s chunks=%-8d (%.1f per capped symbol)\n",
+					"", t.chunks, ratio(t.chunks, t.n))
+			}
 			if t.bodyFTS > 0 {
 				fmt.Printf("%-60s body_fts=%dKB (%.1f%% of the body text it indexes)\n",
 					"", t.bodyFTS/1024, 100*ratio(t.bodyFTS, t.visible+t.hidden))
@@ -40,7 +44,7 @@ func main() {
 // channels: vector, FTS and rerank all read body_excerpt, which the extractor
 // caps (bodyExcerptLimit). symbol_bodies holds the full body for exactly the
 // symbols that were capped, so the delta is the unsearchable remainder.
-type truncStats struct{ n, visible, hidden, bodyFTS int }
+type truncStats struct{ n, visible, hidden, bodyFTS, chunks int }
 
 func truncation(path string) (truncStats, error) {
 	var t truncStats
@@ -61,6 +65,7 @@ func truncation(path string) (truncStats, error) {
 	// The body index is external-content, so this is index overhead only — the
 	// bodies themselves are not copied into it.
 	_ = db.QueryRow(`SELECT COALESCE(SUM(LENGTH(block)), 0) FROM symbol_body_fts_data`).Scan(&t.bodyFTS)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM symbol_chunks`).Scan(&t.chunks)
 	return t, nil
 }
 

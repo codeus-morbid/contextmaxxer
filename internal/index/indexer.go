@@ -314,6 +314,9 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 					idx.log.Warn("upsert embedding batch error", "path", rec.RelPath, "err", err)
 				}
 			}
+			if idx.embedder != nil && ChunkingEnabled() {
+				idx.embedChunks(ctx, rec.RelPath, rec.Language, symbols, ids)
+			}
 		}
 
 		stats.FilesIndexed++
@@ -395,4 +398,43 @@ func embeddingTextHash(path, language string, sym store.Symbol) string {
 func hashString(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
+}
+
+// embedChunks gives the capped symbols of one file a vector per window. It is
+// best-effort in exactly the way the per-symbol embedding is: a failure costs
+// the extra channel, never the file's index entry.
+func (idx *Indexer) embedChunks(ctx context.Context, relPath, language string, symbols []store.Symbol, ids []int64) {
+	var chunks []store.SymbolChunk
+	for i, sym := range symbols {
+		sym.ID = ids[i]
+		chunks = append(chunks, ChunkSymbol(relPath, language, sym)...)
+	}
+	if len(chunks) == 0 {
+		return
+	}
+	chunkIDs, err := idx.store.SaveSymbolChunks(ctx, chunks)
+	if err != nil {
+		idx.log.Warn("save chunks error", "path", relPath, "err", err)
+		return
+	}
+	texts := make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.Text
+	}
+	vecs, err := idx.embedder.Embed(ctx, texts)
+	if err != nil {
+		idx.log.Warn("embed chunks error", "path", relPath, "err", err)
+		return
+	}
+	if len(vecs) != len(chunkIDs) {
+		idx.log.Warn("embed chunks count mismatch", "path", relPath, "want", len(chunkIDs), "got", len(vecs))
+		return
+	}
+	embeddings := make([]store.ChunkEmbedding, len(vecs))
+	for i, vec := range vecs {
+		embeddings[i] = store.ChunkEmbedding{ChunkID: chunkIDs[i], Vector: vec}
+	}
+	if err := idx.store.UpsertChunkEmbeddingBatch(ctx, embeddings); err != nil {
+		idx.log.Warn("upsert chunk embeddings error", "path", relPath, "err", err)
+	}
 }

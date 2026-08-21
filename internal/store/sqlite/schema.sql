@@ -77,3 +77,15 @@ CREATE TABLE IF NOT EXISTS feedback (
 CREATE VIRTUAL TABLE IF NOT EXISTS symbol_body_fts USING fts5(
   body, content='symbol_bodies', content_rowid='symbol_id'
 );
+
+-- Chunks of the capped symbols, one embeddable window each. The vector channel
+-- reads body_excerpt like every other channel, so without these the code past
+-- the cap has no vector representation at all. symbol_chunk_vec is created in
+-- sqlite.go, which knows the embedding dimension.
+CREATE TABLE IF NOT EXISTS symbol_chunks (
+  id INTEGER PRIMARY KEY,
+  symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  start_line INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_chunks_symbol ON symbol_chunks(symbol_id);

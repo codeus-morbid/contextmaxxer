@@ -24,6 +24,8 @@ type Store interface {
 
 	UpsertEmbedding(ctx context.Context, symbolID int64, vec []float32) error
 	UpsertEmbeddingBatch(ctx context.Context, embeddings []Embedding) error
+	SaveSymbolChunks(ctx context.Context, chunks []SymbolChunk) ([]int64, error)
+	UpsertChunkEmbeddingBatch(ctx context.Context, embeddings []ChunkEmbedding) error
 	GetEmbedding(ctx context.Context, symbolID int64) ([]float32, bool, error)
 
 	SearchByVector(ctx context.Context, embedding []float32, topK int) ([]Symbol, error)

@@ -717,3 +717,98 @@ func TestStore_DeleteFileClearsSearchIndexes(t *testing.T) {
 		`SELECT count(*) FROM symbol_body_fts WHERE symbol_body_fts MATCH ?`, "quorumRecalibration").Scan(&bodyTerms))
 	require.Zero(t, bodyTerms, "body index still holds terms of a deleted file")
 }
+
+// unitVec returns a 384-dim vector pointing at one axis, so two of them are
+// either identical or orthogonal — enough to steer a KNN test deterministically.
+func unitVec(axis int) []float32 {
+	v := make([]float32, 384)
+	v[axis] = 1
+	return v
+}
+
+// The per-symbol vector is built from the capped excerpt, so code past the cap
+// has no vector at all. Chunks give it one, and a hit must name the owning
+// symbol rather than the chunk.
+func TestStore_SearchByChunkVectorFindsOwningSymbol(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fid, err := s.SaveFile(ctx, &store.File{Path: "/chunked.go", Language: "go", Hash: "h"})
+	require.NoError(t, err)
+
+	ids, err := s.SaveSymbolBatch(ctx, []store.Symbol{
+		{FileID: fid, Name: "Huge", Kind: store.KindFunction, QualifiedName: "pkg.Huge", BodyExcerpt: "capped"},
+		{FileID: fid, Name: "Other", Kind: store.KindFunction, QualifiedName: "pkg.Other", BodyExcerpt: "other"},
+	})
+	require.NoError(t, err)
+
+	// Two chunks of the same symbol, plus one of another: a long function must
+	// not fill the pool with its own windows.
+	chunkIDs, err := s.SaveSymbolChunks(ctx, []store.SymbolChunk{
+		{SymbolID: ids[0], StartLine: 10},
+		{SymbolID: ids[0], StartLine: 40},
+		{SymbolID: ids[1], StartLine: 5},
+	})
+	require.NoError(t, err)
+	require.Len(t, chunkIDs, 3)
+	require.NoError(t, s.UpsertChunkEmbeddingBatch(ctx, []store.ChunkEmbedding{
+		{ChunkID: chunkIDs[0], Vector: unitVec(0)},
+		{ChunkID: chunkIDs[1], Vector: unitVec(0)},
+		{ChunkID: chunkIDs[2], Vector: unitVec(7)},
+	}))
+
+	hits, err := s.SearchByChunkVector(ctx, unitVec(0), 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, hits)
+	require.Equal(t, "pkg.Huge", hits[0].QualifiedName)
+
+	seen := map[string]int{}
+	for _, h := range hits {
+		seen[h.QualifiedName]++
+	}
+	require.Equal(t, 1, seen["pkg.Huge"], "one symbol must not appear twice through its own chunks")
+
+	n, err := s.CountChunks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 3, n)
+}
+
+// symbol_chunks cascades with its symbol; symbol_chunk_vec is a vec0 virtual
+// table and does not, exactly like symbol_vec. Both delete paths must clear it
+// or KNN keeps answering for code that is gone.
+func TestStore_DeletePathsClearChunkVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		delete func(s *Store, ctx context.Context, fid int64) error
+	}{
+		{"DeleteSymbolsByFile", func(s *Store, ctx context.Context, fid int64) error {
+			return s.DeleteSymbolsByFile(ctx, fid)
+		}},
+		{"DeleteFile", func(s *Store, ctx context.Context, fid int64) error {
+			return s.DeleteFile(ctx, fid)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			fid, err := s.SaveFile(ctx, &store.File{Path: "/gone.go", Language: "go", Hash: "h"})
+			require.NoError(t, err)
+			ids, err := s.SaveSymbolBatch(ctx, []store.Symbol{{
+				FileID: fid, Name: "Huge", Kind: store.KindFunction,
+				QualifiedName: "pkg.Huge", BodyExcerpt: "capped",
+			}})
+			require.NoError(t, err)
+			chunkIDs, err := s.SaveSymbolChunks(ctx, []store.SymbolChunk{{SymbolID: ids[0], StartLine: 10}})
+			require.NoError(t, err)
+			require.NoError(t, s.UpsertChunkEmbeddingBatch(ctx, []store.ChunkEmbedding{
+				{ChunkID: chunkIDs[0], Vector: unitVec(0)},
+			}))
+
+			require.NoError(t, tc.delete(s, ctx, fid))
+
+			var vectors int
+			require.NoError(t, s.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM symbol_chunk_vec WHERE chunk_id=?`, chunkIDs[0]).Scan(&vectors))
+			require.Zero(t, vectors, "chunk vector outlived its symbol")
+		})
+	}
+}

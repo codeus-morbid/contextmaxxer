@@ -41,10 +41,36 @@ var DefaultFTSWeight float32 = 1.0
 // false confidence moving with this weight rather than with a code change.
 var DefaultBodyFTSWeight float32 = 1.0
 
+// DefaultChunkVecWeight scales the chunk-vector channel, and 0 switches the
+// feature off end to end: no chunks are built at index time and no KNN runs per
+// query. CONTEXTMAXXER_CHUNK_VEC_WEIGHT turns it on.
+//
+// DECISION(2026-08): ship it off. The channel is the semantic counterpart of
+// the body FTS one — the per-symbol vector is built from the capped excerpt, so
+// code past the cap has no vector at all — but the benefit did not survive
+// measurement: prometheus deep recall 0.68 -> 0.73 (41 -> 44 of 60) against
+// cockroach 0.60 -> 0.58 (36 -> 35), which is +2 cases in 120. The costs are
+// not in doubt: ~30% longer indexing (cockroach 1938s), +4-7% index size, a
+// full reindex to benefit at all, +2% query latency.
+//
+// ASSUMES: the null result is real and not an artifact of how it was measured.
+// That assumption is weak — cmd/deepprobe builds its query as a bag of
+// identifiers from one code line, which is a lexical query, and a semantic
+// channel should earn its keep on paraphrases that the probe never generates.
+// REVISIT IF: a paraphrastic deep-content case set exists (an LLM rewriting
+// probe lines as questions would do it), or the embedder changes — ft2 moved
+// recall on large corpora where the base model was saturated.
+var DefaultChunkVecWeight float32 = 0
+
 func init() {
 	if v := os.Getenv("CONTEXTMAXXER_BODY_FTS_WEIGHT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 32); err == nil && f >= 0 {
 			DefaultBodyFTSWeight = float32(f)
+		}
+	}
+	if v := os.Getenv("CONTEXTMAXXER_CHUNK_VEC_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f >= 0 {
+			DefaultChunkVecWeight = float32(f)
 		}
 	}
 }
@@ -156,6 +182,25 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 				originMap[s.ID] = &seedOrigin{}
 			}
 			originMap[s.ID].fromF = true
+		}
+		// DECISION(2026-08): chunk vectors are the semantic counterpart of the
+		// body FTS channel. The per-symbol vector is built from the capped
+		// excerpt, so a paraphrase of code living past the cap matches nothing
+		// lexically and nothing semantically either; body FTS answers only the
+		// first half of that. Chunks exist for capped symbols alone.
+		if qvec != nil && DefaultChunkVecWeight > 0 {
+			cSeeds, err := r.store.SearchByChunkVector(ctx, qvec, req.SeedK)
+			if err != nil {
+				return Result{}, fmt.Errorf("chunk vector seed search: %w", err)
+			}
+			chunkW := DefaultChunkVecWeight
+			for rank, s := range cSeeds {
+				rrfScores[s.ID] += chunkW / float32(rrfK+rank+1)
+				if _, ok := originMap[s.ID]; !ok {
+					originMap[s.ID] = &seedOrigin{}
+				}
+				originMap[s.ID].fromV = true
+			}
 		}
 
 		type rrfEntry struct {

@@ -134,6 +134,25 @@ func New(path, modelName string, dim int) (*Store, error) {
 			return nil, fmt.Errorf("sqlite mark body fts: %w", err)
 		}
 	}
+	// Chunk vectors for capped symbols. Additive: the per-symbol vector stays
+	// exactly as it was, so no existing embedding is recomputed.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS symbol_chunks (
+		id INTEGER PRIMARY KEY,
+		symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+		start_line INTEGER NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite migrate symbol chunks: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_symbol_chunks_symbol ON symbol_chunks(symbol_id)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite migrate symbol chunks index: %w", err)
+	}
+	chunkVecDDL := fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS symbol_chunk_vec USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[%d])`, dim)
+	if _, err := db.Exec(chunkVecDDL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite create symbol_chunk_vec: %w", err)
+	}
 	if _, err := db.Exec(`INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','2')`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite update schema version: %w", err)
@@ -237,6 +256,12 @@ func (s *Store) DeleteFile(ctx context.Context, id int64) error {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM symbol_body_fts WHERE rowid IN (SELECT symbol_id FROM symbol_bodies WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, id); err != nil {
 		return fmt.Errorf("delete file body fts: %w", err)
+	}
+	// symbol_chunks cascades, but its vec0 table does not — same reason
+	// symbol_vec is cleared by hand above.
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM symbol_chunk_vec WHERE chunk_id IN (SELECT id FROM symbol_chunks WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, id); err != nil {
+		return fmt.Errorf("delete file chunk vectors: %w", err)
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id=?`, id)
 	if err != nil {
@@ -391,6 +416,10 @@ func (s *Store) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM symbol_vec WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?)`, fileID); err != nil {
 		return fmt.Errorf("delete symbol embeddings: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM symbol_chunk_vec WHERE chunk_id IN (SELECT id FROM symbol_chunks WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, fileID); err != nil {
+		return fmt.Errorf("delete symbol chunk embeddings: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM symbols WHERE file_id=?`, fileID); err != nil {
 		return fmt.Errorf("delete symbols by file: %w", err)

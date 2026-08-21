@@ -13,12 +13,13 @@ import (
 )
 
 type mockStore struct {
-	symbols       []store.Symbol
-	edges         []store.Edge
-	ids           []int64
-	filePaths     map[int64]string
-	ftsResult     []store.ScoredSymbol
-	bodyFTSResult []store.ScoredSymbol
+	symbols        []store.Symbol
+	edges          []store.Edge
+	ids            []int64
+	filePaths      map[int64]string
+	ftsResult      []store.ScoredSymbol
+	bodyFTSResult  []store.ScoredSymbol
+	chunkVecResult []store.ScoredSymbol
 }
 
 func (m *mockStore) SearchByVectorScored(_ context.Context, _ []float32, k int) ([]store.ScoredSymbol, error) {
@@ -1015,4 +1016,8 @@ func TestApplyEvidenceSpansFallsBackToBiEncoderWindow(t *testing.T) {
 
 func (m *mockStore) SearchByBodyText(_ context.Context, _ string, _ int) ([]store.ScoredSymbol, error) {
 	return m.bodyFTSResult, nil
+}
+
+func (m *mockStore) SearchByChunkVector(_ context.Context, _ []float32, _ int) ([]store.ScoredSymbol, error) {
+	return m.chunkVecResult, nil
 }

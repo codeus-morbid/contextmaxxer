@@ -79,3 +79,20 @@ type Embedding struct {
 	SymbolID int64
 	Vector   []float32
 }
+
+// SymbolChunk is one embeddable window of a symbol whose stored excerpt is
+// lossy. Only capped symbols get chunks: everything else is already fully
+// represented by its own vector.
+type SymbolChunk struct {
+	ID       int64
+	SymbolID int64
+	// StartLine is the chunk's first line in the file, so a hit can point at
+	// the code that matched rather than at the symbol's head.
+	StartLine int
+	Text      string
+}
+
+type ChunkEmbedding struct {
+	ChunkID int64
+	Vector  []float32
+}
