@@ -23,7 +23,7 @@ claims.
 ```bash
 git clone https://github.com/prometheus/prometheus
 cd prometheus && git checkout 2ad3a87   # pin the exact commit we measured
-# index it (GPU optional; CONTEXTMAXXER_ORT_PROVIDER=cuda|directml for speed)
+# index it (GPU is picked automatically; CONTEXTMAXXER_ORT_PROVIDER=cpu|cuda|directml forces one)
 contextmaxxer index .
 # -> Indexed ~535 files, ~9391 symbols
 ```

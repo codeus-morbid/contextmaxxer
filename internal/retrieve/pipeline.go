@@ -23,20 +23,23 @@ const rrfK = 60
 var DefaultFTSWeight float32 = 1.0
 
 // DefaultBodyFTSWeight scales the lossless-body channel, swept on prometheus
-// deep-content recall against the gate:
+// deep-content recall (cmd/deepprobe) against the 20-repo gate:
 //
 //	0.0  recall 0.47  (channel off)
-//	0.8  recall 0.53  every gate metric unmoved
-//	1.0  recall 0.68  false confidence 0.06->0.12 (contextmaxxer), 0.00->0.06
-//	                  (newtonsoft, php-slim); Hit@1/@5 within noise
+//	0.8  recall 0.53
+//	1.0  recall 0.68  gen corpus R@5 0.88->0.90; cockroach Hit@10 0.96->0.93
 //	1.5  recall 0.72  breaks Hit@1 outright (prometheus 0.93->0.88)
 //
-// DECISION(2026-08): ship 0.8, the value that costs nothing measurable. 1.0 is
-// tempting but its confidence cost is not yet separable from stale calibration
-// — adding a seed channel changes ranking, and the weak-match floor was
-// calibrated without it. REVISIT IF: confcal is re-run at 1.0 and false
-// confidence returns to baseline.
-var DefaultBodyFTSWeight float32 = 0.8
+// DECISION(2026-08): ship 1.0. A controlled 0.8-vs-1.0 gate — same binary, the
+// weight the only difference — returns bit-identical false confidence on all
+// twenty repos, and confcal shows the score distributions barely move
+// (negatives p50 0.312 either way), so the channel does not disturb the
+// confidence landscape. Hit@1 and Hit@5 are flat within a case in both
+// directions; the one real cost is cockroach Hit@10, and the served default
+// returns five results, not ten. ASSUMES: max_results stays small enough that
+// rank 6-10 placements are not what the agent reads. REVISIT IF: a repo shows
+// false confidence moving with this weight rather than with a code change.
+var DefaultBodyFTSWeight float32 = 1.0
 
 func init() {
 	if v := os.Getenv("CONTEXTMAXXER_BODY_FTS_WEIGHT"); v != "" {
