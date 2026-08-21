@@ -136,7 +136,15 @@ func NewSessionOptionsForProvider(log *slog.Logger) (*ort.SessionOptions, error)
 		if ortProviderIsExplicit() {
 			return nil, err
 		}
-		log.Warn("GPU execution provider unavailable, falling back to CPU", "provider", provider, "err", err)
+		// CPU is slower than the DirectML this machine could have used, and the
+		// provider cannot be swapped after the runtime is loaded, so say what to
+		// set rather than leaving a quiet downgrade.
+		hint := ""
+		if provider == "cuda" {
+			hint = "set CONTEXTMAXXER_ORT_PROVIDER=directml to use the GPU without CUDA"
+		}
+		log.Warn("GPU execution provider unavailable, falling back to CPU",
+			"provider", provider, "err", err, "hint", hint)
 		return nil, nil
 	}
 	return opts, nil

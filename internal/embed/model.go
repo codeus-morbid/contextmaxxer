@@ -147,6 +147,15 @@ func OrtProvider() string {
 	}
 	// auto (default)
 	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
+		// DECISION(2026-08): prefer CUDA when its runtime actually loads.
+		// Measured on an RTX 3060: 512 -> 266ms per self-retrieval case, with
+		// Hit@1 identical to three decimals on both verbatim and paraphrased
+		// queries, so the two providers agree numerically. DirectML remains the
+		// answer for every machine without the CUDA stack, which is why the
+		// probe has to be conclusive rather than optimistic.
+		if cudaRuntimeAvailable() {
+			return "cuda"
+		}
 		return "directml"
 	}
 	return "cpu"
