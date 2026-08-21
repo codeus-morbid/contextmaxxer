@@ -22,7 +22,8 @@ func main() {
 			fmt.Printf("%-60s ERROR: %v\n", path, err)
 			continue
 		}
-		fmt.Printf("%-60s symbols=%-8d edges=%-8d (edges/sym=%.2f)\n", path, s, e, ratio(e, s))
+		fmt.Printf("%-60s symbols=%-8d edges=%-8d (edges/sym=%.2f) content=v%s\n",
+			path, s, e, ratio(e, s), contentVersion(path))
 		if t, err := truncation(path); err == nil {
 			fmt.Printf("%-60s truncated=%-8d (%.1f%% of symbols)  visible=%dKB hidden=%dKB (%.1f%% of their code unsearchable)\n",
 				"", t.n, 100*ratio(t.n, s), t.visible/1024, t.hidden/1024,
@@ -83,4 +84,20 @@ func counts(path string) (symbols, edges int, err error) {
 		return 0, 0, err
 	}
 	return symbols, edges, nil
+}
+
+// contentVersion reports the extractor generation that filled the index. v1
+// predates lossless bodies and exact call lines, and the server refuses to
+// serve it — the only cure is a rebuild.
+func contentVersion(path string) string {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return "?"
+	}
+	defer db.Close()
+	var v string
+	if err := db.QueryRow(`SELECT value FROM _meta WHERE key='index_content_version'`).Scan(&v); err != nil || v == "" {
+		return "?"
+	}
+	return v
 }
