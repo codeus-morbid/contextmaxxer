@@ -210,3 +210,35 @@ func (s *Server) Stop() {
 	}
 	_ = s.cmd.Wait()
 }
+
+// FindMarkdown returns the response exactly as an agent host receives it. The
+// other helpers parse the JSON encoding, which is the wrong shape for judging
+// what an agent actually reads.
+func (s *Server) FindMarkdown(query string, maxResults int, mode string) (string, error) {
+	id := s.next()
+	args := map[string]any{
+		"query":       query,
+		"max_results": maxResults,
+		"format":      "md",
+	}
+	if mode != "" {
+		args["mode"] = mode
+	}
+	if s.seedK > 0 {
+		args["seed_k"] = s.seedK
+	}
+	if err := s.send(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{"name": "find_context", "arguments": args},
+	}); err != nil {
+		return "", err
+	}
+	r, err := s.recv(id)
+	if err != nil {
+		return "", err
+	}
+	if r.Result.IsError || len(r.Result.Content) == 0 {
+		return "", fmt.Errorf("tool error for %q", query)
+	}
+	return r.Result.Content[0].Text, nil
+}
