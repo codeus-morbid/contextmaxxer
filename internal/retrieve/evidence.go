@@ -31,7 +31,27 @@ const (
 	// cross-encoder re-scores. CONTEXTMAXXER_EVIDENCE_CE_TOPK overrides it; 0
 	// sends every window (the quality ceiling, for measurement).
 	evidenceCEShortlist = 8
+	// evidenceWindowsPerResult is how many of the ranked windows are shown.
+	// Measured: one window held the queried code 45% of the time on prometheus
+	// and 56% on cockroach, so the answer was often in the runner-up. Overriding
+	// via CONTEXTMAXXER_EVIDENCE_WINDOWS.
+	evidenceWindowsPerResult = 3
+	// evidenceKeepRatio is how close to the best a runner-up window must score
+	// to be shown alongside it.
+	evidenceKeepRatio = 0.6
 )
+
+// EvidenceGapMarker separates non-adjacent windows in a trimmed body.
+const EvidenceGapMarker = "// ..."
+
+func windowsPerResult() int {
+	if v := os.Getenv("CONTEXTMAXXER_EVIDENCE_WINDOWS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			return n
+		}
+	}
+	return evidenceWindowsPerResult
+}
 
 func ceShortlist() int {
 	if v := os.Getenv("CONTEXTMAXXER_EVIDENCE_CE_TOPK"); v != "" {
@@ -76,28 +96,103 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, query string, qvec []
 		scores[i] = evidenceDot(vecs[i], qvec)
 	}
 
-	best := pickBest(jobs, scores)
+	ranked := rankWindows(jobs, scores)
 	if scorer, ok := r.reranker.(TextScorer); ok && query != "" {
 		if refined, ok := refineWithCrossEncoder(ctx, scorer, query, jobs, windowTexts, scores); ok {
-			best = refined
+			ranked = refined
 		}
 	}
 
+	keep := windowsPerResult()
 	for ji, j := range jobs {
 		res := &results[j.ri]
 		lines := strings.Split(res.Body, "\n")
-		spanStart := best[ji] - evidenceContextLines
-		if spanStart < 0 {
-			spanStart = 0
+		spans := mergeSpans(topSpans(ranked[ji], keep, len(lines)))
+		renderSegments(res, lines, spans)
+	}
+}
+
+// span is a half-open line range within the body.
+type span struct{ start, end int }
+
+// topSpans expands the best-ranked windows into context-padded ranges. Beyond
+// the first it keeps only windows that scored comparably: when the scorer picked
+// one window decisively there is nothing to add, and showing runners-up anyway
+// would spend tokens on code it just ruled out.
+func topSpans(ranked []rankedWindow, keep, bodyLines int) []span {
+	if keep > len(ranked) {
+		keep = len(ranked)
+	}
+	out := make([]span, 0, keep)
+	for i, w := range ranked[:keep] {
+		if i > 0 && !comparableScore(w.score, ranked[0].score) {
+			break
 		}
-		spanEnd := best[ji] + evidenceWindowLines + evidenceContextLines
-		if spanEnd > len(lines) {
-			spanEnd = len(lines)
+		lo := w.start - evidenceContextLines
+		if lo < 0 {
+			lo = 0
 		}
-		res.Body = strings.Join(lines[spanStart:spanEnd], "\n")
-		res.BodyStartLine = res.StartLine + spanStart
-		res.BodyEndLine = res.StartLine + spanEnd - 1
-		res.Detail = "excerpt"
+		hi := w.start + evidenceWindowLines + evidenceContextLines
+		if hi > bodyLines {
+			hi = bodyLines
+		}
+		out = append(out, span{lo, hi})
+	}
+	return out
+}
+
+// comparableScore reports whether a runner-up is close enough to the best to be
+// worth showing. Both scorers produce higher-is-better scores on a bounded
+// scale, so a ratio works; a non-positive top score carries no information and
+// every window is then equally (un)justified.
+func comparableScore(score, top float32) bool {
+	if top <= 0 {
+		return true
+	}
+	return score >= top*evidenceKeepRatio
+}
+
+// mergeSpans sorts the ranges and folds overlapping or touching ones together,
+// so two adjacent winning windows read as one block instead of a block, a gap
+// marker, and the very next line.
+func mergeSpans(spans []span) []span {
+	if len(spans) == 0 {
+		return nil
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	out := []span{spans[0]}
+	for _, s := range spans[1:] {
+		last := &out[len(out)-1]
+		if s.start <= last.end {
+			if s.end > last.end {
+				last.end = s.end
+			}
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// renderSegments writes the chosen ranges into the result, joined by a gap
+// marker. BodySegments carries each range's real first line, because numbering
+// straight through the marker would misattribute every line after a gap.
+func renderSegments(res *ScoredResult, lines []string, spans []span) {
+	if len(spans) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(spans))
+	segs := make([]BodySegment, 0, len(spans))
+	for _, s := range spans {
+		parts = append(parts, strings.Join(lines[s.start:s.end], "\n"))
+		segs = append(segs, BodySegment{StartLine: res.StartLine + s.start, Lines: s.end - s.start})
+	}
+	res.Body = strings.Join(parts, "\n"+EvidenceGapMarker+"\n")
+	res.BodyStartLine = segs[0].StartLine
+	res.BodyEndLine = res.StartLine + spans[len(spans)-1].end - 1
+	res.Detail = "excerpt"
+	if len(segs) > 1 {
+		res.BodySegments = segs
 	}
 }
 
@@ -148,27 +243,32 @@ func collectWindows(ctx context.Context, r *Retriever, results []ScoredResult) (
 	return jobs, windowTexts
 }
 
-// pickBest returns, per job, the starting line of its highest-scoring window.
-func pickBest(jobs []evidenceJob, scores []float32) []int {
-	best := make([]int, len(jobs))
+// rankedWindow is a candidate window with the score that ranked it.
+type rankedWindow struct {
+	start int
+	score float32
+}
+
+// rankWindows returns, per job, its windows ordered best score first.
+func rankWindows(jobs []evidenceJob, scores []float32) [][]rankedWindow {
+	ranked := make([][]rankedWindow, len(jobs))
 	wi := 0
 	for ji, j := range jobs {
-		bestScore := float32(-1e30)
-		for _, ws := range j.winStart {
-			if scores[wi] > bestScore {
-				bestScore = scores[wi]
-				best[ji] = ws
-			}
-			wi++
+		out := make([]rankedWindow, len(j.winStart))
+		for i, ws := range j.winStart {
+			out[i] = rankedWindow{start: ws, score: scores[wi+i]}
 		}
+		sort.SliceStable(out, func(a, b int) bool { return out[a].score > out[b].score })
+		ranked[ji] = out
+		wi += len(j.winStart)
 	}
-	return best
+	return ranked
 }
 
 // refineWithCrossEncoder re-scores each job's top bi-encoder windows with the
 // cross-encoder. It reports false on any failure so the caller keeps the
 // bi-encoder choice rather than losing the trim altogether.
-func refineWithCrossEncoder(ctx context.Context, scorer TextScorer, query string, jobs []evidenceJob, windowTexts []string, scores []float32) ([]int, bool) {
+func refineWithCrossEncoder(ctx context.Context, scorer TextScorer, query string, jobs []evidenceJob, windowTexts []string, scores []float32) ([][]rankedWindow, bool) {
 	topK := ceShortlist()
 	var docs []string
 	var docStart []int // window start line for each doc
@@ -197,18 +297,16 @@ func refineWithCrossEncoder(ctx context.Context, scorer TextScorer, query string
 	if err != nil || len(ceScores) != len(docs) {
 		return nil, false
 	}
-	best := make([]int, len(jobs))
-	bestScore := make([]float32, len(jobs))
-	for i := range bestScore {
-		bestScore[i] = -1e30
+	perJob := make([][]rankedWindow, len(jobs))
+	for i := range docs {
+		ji := docJob[i]
+		perJob[ji] = append(perJob[ji], rankedWindow{start: docStart[i], score: ceScores[i]})
 	}
-	for i, s := range ceScores {
-		if ji := docJob[i]; s > bestScore[ji] {
-			bestScore[ji] = s
-			best[ji] = docStart[i]
-		}
+	for ji := range perJob {
+		w := perJob[ji]
+		sort.SliceStable(w, func(a, b int) bool { return w[a].score > w[b].score })
 	}
-	return best, true
+	return perJob, true
 }
 
 func restore(jobs []evidenceJob, results []ScoredResult) {

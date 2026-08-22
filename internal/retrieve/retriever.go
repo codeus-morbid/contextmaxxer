@@ -95,6 +95,12 @@ type ScoredResult struct {
 	// It differs from EndLine when Detail is "excerpt".
 	BodyEndLine int
 
+	// BodySegments describes the windows Body carries when the evidence trim
+	// keeps more than one. Body joins them with evidenceGapMarker; the segments
+	// carry each window's real first line so numbering stays honest across the
+	// gap. Empty means one contiguous span starting at BodyStartLine.
+	BodySegments []BodySegment
+
 	Confidence string
 	Callers    []SymbolRef
 	Callees    []SymbolRef
@@ -104,6 +110,12 @@ type ScoredResult struct {
 	Siblings       []SymbolRef
 	FlowContext    []FlowRef
 	CompanionFiles []string
+}
+
+// BodySegment is one contiguous window of a trimmed body.
+type BodySegment struct {
+	StartLine int
+	Lines     int
 }
 
 type RankingFeatures struct {

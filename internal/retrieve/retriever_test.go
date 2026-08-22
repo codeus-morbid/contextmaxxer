@@ -851,6 +851,9 @@ func TestPack_TiersBodiesBeyondFullBodyCount(t *testing.T) {
 }
 
 func TestApplyEvidenceSpansMarksVisibleExcerpt(t *testing.T) {
+	// One window: this covers the line-numbering bookkeeping, not how many
+	// windows a spread-out answer earns.
+	t.Setenv("CONTEXTMAXXER_EVIDENCE_WINDOWS", "1")
 	body := strings.Repeat("line\n", 39) + "line"
 	results := []ScoredResult{{
 		QualifiedName: "pkg.Long",
@@ -1020,4 +1023,73 @@ func (m *mockStore) SearchByBodyText(_ context.Context, _ string, _ int) ([]stor
 
 func (m *mockStore) SearchByChunkVector(_ context.Context, _ []float32, _ int) ([]store.ScoredSymbol, error) {
 	return m.chunkVecResult, nil
+}
+
+func TestMergeSpansFoldsOverlappingWindows(t *testing.T) {
+	// Adjacent winners must read as one block, not block / gap marker / the very
+	// next line. Disjoint ones must stay apart.
+	require.Equal(t,
+		[]span{{0, 20}, {50, 66}},
+		mergeSpans([]span{{50, 66}, {0, 16}, {10, 20}}))
+	require.Nil(t, mergeSpans(nil))
+}
+
+// Regression: with three windows the answer can be in the runner-up. One window
+// held the queried code 45% of the time on prometheus (cmd/deepprobe).
+func TestApplyEvidenceSpansKeepsSeveralWindows(t *testing.T) {
+	t.Setenv("CONTEXTMAXXER_EVIDENCE_CE_TOPK", "0")
+	head := strings.Repeat("head\n", 30)
+	// The answer sits in two places far apart — the case several windows exist
+	// for. One decisive region collapses to a single block instead, which is
+	// what the keep-ratio is for.
+	full := head + strings.Repeat("mid\n", 20) + "NEEDLE first\n" +
+		strings.Repeat("gap\n", 40) + "NEEDLE second\n" + strings.Repeat("tail\n", 10)
+	r := &Retriever{
+		embedder: &needleEmbedder{needle: "head"},
+		reranker: &needleScorer{needle: "NEEDLE"},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: head, FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 202,
+		Body: head, Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, "where is the needle", []float32{1, 0, 0, 0}, results)
+
+	require.Contains(t, results[0].Body, "NEEDLE")
+	require.Contains(t, results[0].Body, EvidenceGapMarker,
+		"disjoint windows must be separated by the gap marker")
+	require.GreaterOrEqual(t, len(results[0].BodySegments), 2)
+
+	// Segments must describe exactly the lines Body carries, or the numbering
+	// built from them lies.
+	bodyLines := strings.Split(results[0].Body, "\n")
+	total := 0
+	for _, seg := range results[0].BodySegments {
+		total += seg.Lines
+	}
+	require.Equal(t, len(bodyLines)-(len(results[0].BodySegments)-1), total,
+		"body lines minus gap markers must equal the segment line counts")
+}
+
+func TestApplyEvidenceSpansSingleWindowLeavesNoSegments(t *testing.T) {
+	t.Setenv("CONTEXTMAXXER_EVIDENCE_WINDOWS", "1")
+	full := strings.Repeat("head\n", 30) + "NEEDLE here\n" + strings.Repeat("tail\n", 30)
+	r := &Retriever{
+		embedder: &needleEmbedder{needle: "NEEDLE"},
+		store: &mockStore{symbols: []store.Symbol{{
+			ID: 7, BodyExcerpt: strings.Repeat("head\n", 30), FullBody: full,
+		}}},
+	}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 161,
+		Body: strings.Repeat("head\n", 30), Detail: "full",
+	}}
+
+	applyEvidenceSpans(context.Background(), r, "", []float32{1, 0, 0, 0}, results)
+
+	require.Empty(t, results[0].BodySegments, "one window needs no segment list")
+	require.NotContains(t, results[0].Body, EvidenceGapMarker)
 }

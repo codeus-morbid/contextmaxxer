@@ -147,3 +147,46 @@ func TestServerRecordsFeedback(t *testing.T) {
 		Source:          "test",
 	}))
 }
+
+// The agent cites these numbers, so a wrong one is worse than none. Numbering
+// straight through a gap marker would misattribute every line after the gap.
+func TestNumberBodyJumpsAtEachGap(t *testing.T) {
+	body := strings.Join([]string{
+		"first", "second",
+		retrieve.EvidenceGapMarker,
+		"third", "fourth",
+		retrieve.EvidenceGapMarker,
+		"fifth",
+	}, "\n")
+	segments := []retrieve.BodySegment{
+		{StartLine: 100, Lines: 2},
+		{StartLine: 240, Lines: 2},
+		{StartLine: 900, Lines: 1},
+	}
+
+	got := numberBody(body, 100, segments)
+
+	require.Equal(t, strings.Join([]string{
+		"100\tfirst", "101\tsecond",
+		retrieve.EvidenceGapMarker,
+		"240\tthird", "241\tfourth",
+		retrieve.EvidenceGapMarker,
+		"900\tfifth",
+	}, "\n"), got)
+}
+
+func TestNumberBodyWithoutSegmentsIsSequential(t *testing.T) {
+	require.Equal(t, "7\ta\n8\tb", numberBody("a\nb", 7, nil))
+}
+
+func TestVisibleSpanTextNamesEveryWindow(t *testing.T) {
+	// One range for a single window; one per window otherwise — reporting only
+	// first-to-last would claim the gaps are visible.
+	require.Equal(t, "10-20", visibleSpanText(retrieve.ScoredResult{
+		BodyStartLine: 10, BodyEndLine: 20,
+	}))
+	require.Equal(t, "10-11,40-42", visibleSpanText(retrieve.ScoredResult{
+		BodyStartLine: 10, BodyEndLine: 42,
+		BodySegments: []retrieve.BodySegment{{StartLine: 10, Lines: 2}, {StartLine: 40, Lines: 3}},
+	}))
+}

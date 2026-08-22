@@ -95,7 +95,7 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 	if withName {
 		label = "presentation (name + deep content)"
 	}
-	var retrieved, covered, inTier, coveredInTier int
+	var retrieved, covered, inTier, coveredInTier, shownLines int
 	for _, c := range cases {
 		q := strings.Join(c.Tokens, " ")
 		if withName {
@@ -120,8 +120,12 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 			continue
 		}
 		retrieved++
-		lo, hi := parseSpan(visibleSpan(res, rank, c))
-		hit := lo > 0 && c.ProbeLine >= lo && c.ProbeLine <= hi
+		spans := parseSpans(visibleSpan(res, rank, c))
+		hit := coversLine(spans, c.ProbeLine)
+		lo, hi := 0, 0
+		if len(spans) > 0 {
+			lo, hi = spans[0].lo, spans[len(spans)-1].hi
+		}
 		if hit {
 			covered++
 		}
@@ -130,6 +134,9 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 		// and not a failure of window selection.
 		if rank < fullBodyTier {
 			inTier++
+			for _, s := range spans {
+				shownLines += s.hi - s.lo + 1
+			}
 			if hit {
 				coveredInTier++
 			}
@@ -142,9 +149,10 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 	nn := len(cases)
 	fmt.Printf("%-34s retrieved=%.2f (%d/%d)", label, rate(retrieved, nn), retrieved, nn)
 	if withName {
-		fmt.Printf("  covered_in_tier=%.2f (%d/%d)  covered_of_retrieved=%.2f (%d/%d)",
+		fmt.Printf("  covered_in_tier=%.2f (%d/%d)  covered_of_retrieved=%.2f (%d/%d)  avg_lines_shown=%.1f",
 			rate(coveredInTier, inTier), coveredInTier, inTier,
-			rate(covered, retrieved), covered, retrieved)
+			rate(covered, retrieved), covered, retrieved,
+			rate(shownLines, inTier))
 	}
 	fmt.Println()
 }
@@ -160,17 +168,35 @@ func visibleSpan(res evalharness.Result, rank int, c probeCase) string {
 	return fmt.Sprintf("%d-%d", c.StartLine, c.ExcerptEnd)
 }
 
-func parseSpan(s string) (lo, hi int) {
-	parts := strings.SplitN(s, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0
+type lineSpan struct{ lo, hi int }
+
+// parseSpans reads the visible-lines field, which names one range per shown
+// window ("701-716,760-775"). Reading it as a single first-to-last range would
+// count the gaps between windows as visible.
+func parseSpans(s string) []lineSpan {
+	var out []lineSpan
+	for _, part := range strings.Split(s, ",") {
+		ends := strings.SplitN(strings.TrimSpace(part), "-", 2)
+		if len(ends) != 2 {
+			continue
+		}
+		lo, err1 := strconv.Atoi(strings.TrimSpace(ends[0]))
+		hi, err2 := strconv.Atoi(strings.TrimSpace(ends[1]))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		out = append(out, lineSpan{lo, hi})
 	}
-	lo, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-	hi, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil {
-		return 0, 0
+	return out
+}
+
+func coversLine(spans []lineSpan, line int) bool {
+	for _, s := range spans {
+		if line >= s.lo && line <= s.hi {
+			return true
+		}
 	}
-	return lo, hi
+	return false
 }
 
 // loadCases samples truncated symbols and picks, for each, the most

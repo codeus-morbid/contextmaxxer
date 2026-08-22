@@ -356,7 +356,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				o.Detail = sr.Detail
 			}
 			if sr.Detail == "excerpt" {
-				o.VisibleLines = fmt.Sprintf("%d-%d", sr.BodyStartLine, sr.BodyEndLine)
+				o.VisibleLines = visibleSpanText(sr)
 				o.OmittedBefore = sr.BodyStartLine - sr.StartLine
 				o.OmittedAfter = sr.EndLine - sr.BodyEndLine
 			}
@@ -386,7 +386,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				if start == 0 {
 					start = sr.StartLine
 				}
-				o.Body = numberLines(sr.Body, start)
+				o.Body = numberBody(sr.Body, start, sr.BodySegments)
 			}
 			// flow_context (2-hop call paths) is the fattest part of the payload
 			// and remains explore-only even when one-hop refs are retained.
@@ -800,7 +800,7 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			fmt.Fprintf(&b, " — %s\n", teaser)
 		} else {
 			if sr.Detail == "excerpt" {
-				fmt.Fprintf(&b, " [excerpt %d-%d; expand rank %d for full body]", sr.BodyStartLine, sr.BodyEndLine, i+1)
+				fmt.Fprintf(&b, " [excerpt %s; expand rank %d for full body]", visibleSpanText(sr), i+1)
 			}
 			b.WriteByte('\n')
 			start := sr.BodyStartLine
@@ -880,16 +880,36 @@ func numberExpansionLines(body string, startLine, startColumn int) string {
 }
 
 func numberLines(body string, startLine int) string {
+	return numberBody(body, startLine, nil)
+}
+
+// numberBody numbers a body with its real file lines. With segments the body
+// carries several windows joined by the gap marker, and the counter has to jump
+// at each marker: numbering straight through would put a confident, wrong line
+// number on every line after the first gap, which is worse than not numbering
+// at all — the agent cites those numbers.
+func numberBody(body string, startLine int, segments []retrieve.BodySegment) string {
 	if body == "" {
 		return body
 	}
 	lines := strings.Split(stripCR(body), "\n")
 	var b strings.Builder
+	lineNo := startLine
+	seg := 0
 	for i, ln := range lines {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%d\t%s", startLine+i, ln)
+		if ln == retrieve.EvidenceGapMarker {
+			b.WriteString(ln)
+			seg++
+			if seg < len(segments) {
+				lineNo = segments[seg].StartLine
+			}
+			continue
+		}
+		fmt.Fprintf(&b, "%d\t%s", lineNo, ln)
+		lineNo++
 	}
 	return b.String()
 }
@@ -899,4 +919,18 @@ func numberLines(body string, startLine int) string {
 // every body line of every response.
 func stripCR(s string) string {
 	return strings.ReplaceAll(s, "\r", "")
+}
+
+// visibleSpanText names the lines the response actually shows: one range, or
+// one per window when the trim kept several. Reporting only first-to-last would
+// claim the gaps are visible.
+func visibleSpanText(sr retrieve.ScoredResult) string {
+	if len(sr.BodySegments) < 2 {
+		return fmt.Sprintf("%d-%d", sr.BodyStartLine, sr.BodyEndLine)
+	}
+	parts := make([]string, len(sr.BodySegments))
+	for i, seg := range sr.BodySegments {
+		parts[i] = fmt.Sprintf("%d-%d", seg.StartLine, seg.StartLine+seg.Lines-1)
+	}
+	return strings.Join(parts, ",")
 }
