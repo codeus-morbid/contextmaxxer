@@ -96,6 +96,7 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 		label = "presentation (name + deep content)"
 	}
 	var retrieved, covered, inTier, coveredInTier, shownLines int
+	rankHist := map[int]int{}
 	for _, c := range cases {
 		q := strings.Join(c.Tokens, " ")
 		if withName {
@@ -133,6 +134,7 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 		// pack down to a signature line, so a miss there is a packing decision
 		// and not a failure of window selection.
 		if rank < fullBodyTier {
+			rankHist[rank]++
 			inTier++
 			for _, s := range spans {
 				shownLines += s.hi - s.lo + 1
@@ -153,6 +155,12 @@ func run(srv *evalharness.Server, cases []probeCase, maxResults int, verbose, wi
 			rate(coveredInTier, inTier), coveredInTier, inTier,
 			rate(covered, retrieved), covered, retrieved,
 			rate(shownLines, inTier))
+		// Which ranks the probe actually exercises: a metric that only ever
+		// lands on rank 1 cannot price a change made to ranks 2 and 3.
+		fmt.Printf("  ranks:")
+		for r := 0; r < fullBodyTier; r++ {
+			fmt.Printf(" %d=%d", r+1, rankHist[r])
+		}
 	}
 	fmt.Println()
 }

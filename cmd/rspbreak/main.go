@@ -69,17 +69,16 @@ func main() {
 	mode := flag.String("mode", "", "output mode: answer (default), minimal, explore")
 	minDoc := flag.Int("min-doc", 40, "minimum docstring length for a sampled query")
 	dump := flag.Bool("dump", false, "print the first response verbatim")
+	queryFile := flag.String("queries", "", "file of questions, one per line (default: sample docstrings from the index)")
 	flag.Parse()
 
-	cases, _, err := selfcases.Sample(*indexPath, selfcases.Options{
-		N: *n, MinDoc: *minDoc, Kinds: "function,method",
-	})
+	queries, err := loadQueries(*queryFile, *indexPath, *n, *minDoc)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "sample queries:", err)
+		fmt.Fprintln(os.Stderr, "queries:", err)
 		os.Exit(1)
 	}
-	if len(cases) == 0 {
-		fmt.Fprintln(os.Stderr, "no documented symbols to build queries from")
+	if len(queries) == 0 {
+		fmt.Fprintln(os.Stderr, "no queries to price")
 		os.Exit(1)
 	}
 
@@ -92,10 +91,10 @@ func main() {
 
 	totals := map[string]int{}
 	responses := 0
-	for i, c := range cases {
-		md, err := srv.FindMarkdown(c.Paraphrase(), *maxResults, *mode)
+	for i, q := range queries {
+		md, err := srv.FindMarkdown(q, *maxResults, *mode)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", c.Qualified, err)
+			fmt.Fprintf(os.Stderr, "%q: %v\n", q, err)
 			os.Exit(1)
 		}
 		if *dump && i == 0 {
@@ -230,4 +229,35 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// loadQueries returns the questions to price. Docstring samples are convenient
+// and repo-agnostic, but they are not what an agent asks: they are short and
+// land on small symbols, which makes the boilerplate share look larger than it
+// is on a real question. Pass -queries to price the distribution that matters.
+func loadQueries(path, indexPath string, n, minDoc int) ([]string, error) {
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, line := range strings.Split(string(data), "\n") {
+			if q := strings.TrimSpace(line); q != "" && !strings.HasPrefix(q, "#") {
+				out = append(out, q)
+			}
+		}
+		return out, nil
+	}
+	cases, _, err := selfcases.Sample(indexPath, selfcases.Options{
+		N: n, MinDoc: minDoc, Kinds: "function,method",
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(cases))
+	for _, c := range cases {
+		out = append(out, c.Paraphrase())
+	}
+	return out, nil
 }
