@@ -743,24 +743,32 @@ func TestEnrichGraphContextMarksStaticEdgesAndIncludesTopCallSites(t *testing.T)
 	}
 	r := NewRetriever(ms, &mockEmbedder{}, slog.Default())
 	scored := []ScoredResult{
-		{SymbolID: 2, QualifiedName: "pkg.Beta"},
 		{SymbolID: 1, QualifiedName: "pkg.Alpha"},
+		{SymbolID: 2, QualifiedName: "pkg.Beta"},
 	}
 
 	require.NoError(t, enrichGraphContext(context.Background(), r, Request{}, scored, ms.filePaths))
-	require.Len(t, scored[0].Callers, 1)
-	assert.Equal(t, "static_unverified", scored[0].Callers[0].PathStatus)
-	assert.Contains(t, scored[0].Callers[0].CallSite, "14 case batchResponse:")
-	assert.Contains(t, scored[0].Callers[0].CallSite, "15 Beta()")
-	require.Len(t, scored[1].Callees, 4, "callee limit must retain both branch alternatives after helper calls")
-	assert.Empty(t, scored[1].Callees[0].CallSite, "unconditional helpers should not add evidence payload")
-	assert.Empty(t, scored[1].Callees[1].CallSite, "unconditional helpers should not add evidence payload")
-	assert.Equal(t, "static_unverified", scored[1].Callees[2].PathStatus)
-	assert.Contains(t, scored[1].Callees[2].CallSite, "14 case batchResponse:")
-	assert.Contains(t, scored[1].Callees[2].CallSite, "15 Beta()")
-	assert.Equal(t, "static_unverified", scored[1].Callees[3].PathStatus)
-	assert.Contains(t, scored[1].Callees[3].CallSite, "16 case columnarResponse:")
-	assert.Contains(t, scored[1].Callees[3].CallSite, "17 Gamma()")
+
+	// The top result is where a call chain gets followed, so it carries the
+	// branch evidence.
+	require.Len(t, scored[0].Callees, 4, "callee limit must retain both branch alternatives after helper calls")
+	assert.Empty(t, scored[0].Callees[0].CallSite, "unconditional helpers should not add evidence payload")
+	assert.Empty(t, scored[0].Callees[1].CallSite, "unconditional helpers should not add evidence payload")
+	assert.Equal(t, "static_unverified", scored[0].Callees[2].PathStatus)
+	assert.Contains(t, scored[0].Callees[2].CallSite, "14 case batchResponse:")
+	assert.Contains(t, scored[0].Callees[2].CallSite, "15 Beta()")
+	assert.Equal(t, "static_unverified", scored[0].Callees[3].PathStatus)
+	assert.Contains(t, scored[0].Callees[3].CallSite, "16 case columnarResponse:")
+	assert.Contains(t, scored[0].Callees[3].CallSite, "17 Gamma()")
+
+	// Below it the refs stay — they are cheap and they are the navigation — but
+	// the source windows do not. Hydrating them for every result measured at 205
+	// of 1028 response tokens on cockroach (cmd/rspbreak), spent showing branches
+	// around calls made by candidates the agent did not pick.
+	require.Len(t, scored[1].Callers, 1)
+	assert.Equal(t, "static_unverified", scored[1].Callers[0].PathStatus)
+	assert.Equal(t, 15, scored[1].Callers[0].CallLine, "the call line itself is kept")
+	assert.Empty(t, scored[1].Callers[0].CallSite, "only the top result pays for callsite windows")
 }
 
 func TestRetriever_OutputModeExplore_HasStructure(t *testing.T) {

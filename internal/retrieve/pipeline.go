@@ -658,12 +658,14 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 	)
 	const staticUnverified = "static_unverified"
 
-	// DECISION(2026-08): call edges are path-insensitive. Mark every graph ref as
-	// unverified; hydrate conditional callee windows for every returned result and
-	// caller windows only for the top result. Five callees retain nearby switch
-	// alternatives after helper calls without making the whole graph tail verbose.
-	// ASSUMES: a five-line window identifies common branch/dispatch syntax.
-	// REVISIT IF: branch mistakes persist or graph-context lookups become measurable.
+	// DECISION(2026-08): call edges are path-insensitive, so every graph ref is
+	// marked unverified. Callsite windows hydrate for the top result only —
+	// callers and callees alike. They used to hydrate callees for every result,
+	// which measured at 205 of 1028 response tokens on cockroach (cmd/rspbreak):
+	// a fifth of the payload spent showing the branch around calls made by
+	// candidates the agent did not pick. ASSUMES: an agent follows a call chain
+	// out of the answer, not out of a runner-up. REVISIT IF: branch mistakes
+	// reappear on questions whose answer was not ranked first.
 	bodyCache := make(map[int64]store.SymbolBody)
 	callSiteFor := func(symbolID int64, callLine int) string {
 		if callLine <= 0 {
@@ -688,6 +690,15 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 	// Call-site lines are captured by the AST extractors and stored on edges;
 	// only the top result hydrates bounded source windows around those lines.
 	for i := range scored {
+		// DECISION(2026-08): graph context follows the body tier instead of
+		// being its own policy. A compact result is a one-line "here is another
+		// candidate"; its callers and callees are navigation out of a symbol the
+		// agent has not chosen, and they measured at roughly an eighth of the
+		// response. One rule now covers both, so there is no second knob to keep
+		// in sync. REVISIT IF: an agent A/B shows file reads returning.
+		if scored[i].Detail == "compact" {
+			continue
+		}
 		qn := scored[i].QualifiedName
 		ownerSym, ownerOK := allSymsByQN[qn]
 
@@ -726,7 +737,9 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 				}
 				ref.CallLine = edge.CallLine
 				ref.PathStatus = staticUnverified
-				ref.CallSite = callSiteFor(edge.Src, edge.CallLine)
+				if i == 0 {
+					ref.CallSite = callSiteFor(edge.Src, edge.CallLine)
+				}
 				scored[i].Callees = append(scored[i].Callees, ref)
 			}
 		}

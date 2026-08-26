@@ -26,10 +26,10 @@ func TestNewServer_Constructs(t *testing.T) {
 
 func TestFindContextToolContractPreservesCompactDefaults(t *testing.T) {
 	for _, fragment := range []string{
-		"Compact tail results retain graph context",
+		"compact tail entries are candidates only",
 		"static candidates, not proof",
 		"path_status=static_unverified",
-		"Verify the branch, feature flag, protocol, or dispatch discriminator",
+		"verify the branch, feature flag, protocol, or dispatch discriminator",
 		"call expand_context",
 		"call continue_context",
 		"until status:complete",
@@ -121,9 +121,23 @@ func TestRenderMarkdownKeepsGraphOnCompactAndMarksExcerpt(t *testing.T) {
 			Body: "callNext()", Detail: "excerpt", BodyStartLine: 140, BodyEndLine: 140,
 		},
 	}})
-	assert.Contains(t, out, "callees (path_status=static_unverified; verify branch/dispatch): pkg.Next (pkg/b.go:30-40@17)")
+	assert.Contains(t, out, "callees: pkg.Next (pkg/b.go:30-40@17)")
 	assert.Contains(t, out, "[callsite: 16 case enabled: | 17 Next()]")
 	assert.Contains(t, out, "[excerpt 140-140; expand rank 2 for full body]")
+
+	// The caveat is stated once, not appended to every graph line: repeated it
+	// measured at 84 of 1028 response tokens on cockroach (cmd/rspbreak).
+	assert.Equal(t, 1, strings.Count(out, "path_status=static_unverified"),
+		"the static-edge caveat belongs in one legend line")
+}
+
+func TestRenderMarkdownOmitsTheCaveatWhenNoGraphRefs(t *testing.T) {
+	out := renderMarkdown("req-1", retrieve.OutputModeAnswer, retrieve.Result{Symbols: []retrieve.ScoredResult{{
+		QualifiedName: "pkg.Lonely", Kind: "function", File: "pkg/a.go", StartLine: 1, EndLine: 2,
+		Body: "func Lonely()", Detail: "full",
+	}}})
+
+	assert.NotContains(t, out, "path_status", "nothing to caveat, so no caveat")
 }
 
 func TestSymbolRefOutputsExposeStaticPathStatusAndCallSite(t *testing.T) {

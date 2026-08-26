@@ -48,7 +48,7 @@ const sessionCompactAfter = 4
 const continuationCacheLimit = 128
 const expansionPageBytes = 48 * 1024
 
-const findContextToolDescription = `Semantic code search for this repository. Returns ranked symbols with line-numbered excerpts, signatures, and caller/callee graph context. Call edges are static candidates, not proof that a runtime branch executes: graph refs carry path_status=static_unverified, a call_line, and bounded conditional callsite evidence when available. Verify the branch, feature flag, protocol, or dispatch discriminator before claiming a runtime path. Compact tail results retain graph context. Cite file:line directly from results.
+const findContextToolDescription = `Semantic code search for this repository. Returns ranked symbols with line-numbered excerpts, signatures, and caller/callee graph context. Call edges are static candidates, not proof that a runtime branch executes: verify the branch, feature flag, protocol, or dispatch discriminator before claiming a runtime path. Graph refs carry path_status=static_unverified and a call_line. Graph context and callsite evidence are carried by the top results, where a call chain is worth following; compact tail entries are candidates only. Cite file:line directly from results.
 Modes: 'answer' (default — top matches + graph + confidence), 'minimal' (bodies only, ~50% tokens), 'explore' (+ package overview, for an unfamiliar codebase).
 The defaults are calibrated for agent navigation. During normal exploration omit tuning knobs. If an excerpt omits required code, call expand_context with this request_id and the relevant rank; it hydrates the exact indexed body without rerunning semantic search. If it returns status:more, call continue_context with next_cursor until status:complete; do not replace continuation with grep or file reads.
 After acting on results, call record_feedback once with this call's request_id and the names you used.`
@@ -763,9 +763,15 @@ func (s *Server) recordFeedback(ctx context.Context, event feedback.FeedbackEven
 func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.Result) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "req:%s (pass to record_feedback)\n", requestID)
+	// The caveat is stated once. Repeated on every graph line it measured at 84
+	// of 1028 response tokens on cockroach — a tenth of the payload restating a
+	// sentence the reader has already taken in (cmd/rspbreak).
+	if anyGraphRefs(result) {
+		b.WriteString("callers/callees are static candidates (path_status=static_unverified): verify the branch or dispatch before claiming a runtime path.\n")
+	}
 
 	slash := func(p string) string { return strings.ReplaceAll(p, "\\", "/") }
-	writeRefs := func(label string, refs []retrieve.SymbolRef, graphRefs bool) {
+	writeRefs := func(label string, refs []retrieve.SymbolRef) {
 		if len(refs) == 0 {
 			return
 		}
@@ -779,9 +785,6 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			if r.CallSite != "" {
 				parts[i] += fmt.Sprintf(" [callsite: %s]", r.CallSite)
 			}
-		}
-		if graphRefs {
-			label += " (path_status=static_unverified; verify branch/dispatch)"
 		}
 		fmt.Fprintf(&b, "%s: %s\n", label, strings.Join(parts, "; "))
 	}
@@ -809,10 +812,10 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			}
 			fmt.Fprintf(&b, "```\n%s\n```\n", numberLines(sr.Body, start))
 		}
-		writeRefs("callers", sr.Callers, true)
-		writeRefs("callees", sr.Callees, true)
-		writeRefs("tests", sr.Tests, false)
-		writeRefs("siblings", sr.Siblings, false)
+		writeRefs("callers", sr.Callers)
+		writeRefs("callees", sr.Callees)
+		writeRefs("tests", sr.Tests)
+		writeRefs("siblings", sr.Siblings)
 		if len(sr.CompanionFiles) > 0 {
 			fmt.Fprintf(&b, "companions: %s\n", strings.Join(sr.CompanionFiles, "; "))
 		}
@@ -933,4 +936,15 @@ func visibleSpanText(sr retrieve.ScoredResult) string {
 		parts[i] = fmt.Sprintf("%d-%d", seg.StartLine, seg.StartLine+seg.Lines-1)
 	}
 	return strings.Join(parts, ",")
+}
+
+// anyGraphRefs reports whether the response carries call-graph references, so
+// the caveat about them is emitted only when there is something to caveat.
+func anyGraphRefs(result retrieve.Result) bool {
+	for _, sr := range result.Symbols {
+		if len(sr.Callers) > 0 || len(sr.Callees) > 0 {
+			return true
+		}
+	}
+	return false
 }
