@@ -103,9 +103,21 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, query string, qvec []
 		}
 	}
 
-	keep := windowsPerResult()
+	// DECISION(2026-08): windows scale with rank. On agent-style questions code
+	// is 46% of the response (cmd/rspbreak) — bodies, not boilerplate, are the
+	// payload — and the runner-up bodies are alternatives the agent reads only
+	// if the first one was wrong. The top result keeps the full budget because
+	// that is where the answer usually is; below it one window says "this is
+	// what this candidate is about" for a third of the tokens. ASSUMES: an
+	// answer ranked 2nd or 3rd is worth one window plus an expand, not three.
+	// REVISIT IF: deepprobe coverage below rank 1 turns out to carry the result.
+	top := windowsPerResult()
 	for ji, j := range jobs {
 		res := &results[j.ri]
+		keep := 1
+		if j.ri == 0 {
+			keep = top
+		}
 		lines := strings.Split(res.Body, "\n")
 		spans := mergeSpans(topSpans(ranked[ji], keep, len(lines)))
 		renderSegments(res, lines, spans)
