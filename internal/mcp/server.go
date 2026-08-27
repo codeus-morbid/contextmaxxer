@@ -48,7 +48,10 @@ const sessionCompactAfter = 4
 const continuationCacheLimit = 128
 const expansionPageBytes = 48 * 1024
 
-const findContextToolDescription = `Semantic code search for this repository. Returns ranked symbols with line-numbered excerpts, signatures, and caller/callee graph context. Call edges are static candidates, not proof that a runtime branch executes: verify the branch, feature flag, protocol, or dispatch discriminator before claiming a runtime path. Graph refs carry path_status=static_unverified and a call_line. Graph context and callsite evidence are carried by the top results, where a call chain is worth following; compact tail entries are candidates only. Cite file:line directly from results.
+const findContextToolDescription = `Semantic code search for this repository. Returns ranked symbols with line-numbered excerpts, signatures, and caller/callee graph context.
+Reach for this when you are FOLLOWING A CALL CHAIN ("what actually runs when X happens", "trace this to the storage layer") or when you cannot name what you are looking for and have to describe it. Every result carries callers and callees with the exact call-site line, so each hop costs one call instead of a search plus a file read — measured on a five-chain trace, 19 calls against grep's 52. For a symbol whose name you already know, grep is cheaper and you should use it.
+Call edges are static candidates, not proof that a runtime branch executes: verify the branch, feature flag, protocol, or dispatch discriminator before claiming a runtime path. Graph refs carry path_status=static_unverified and a call_line. Graph context and callsite evidence are carried by the top results, where a call chain is worth following; compact tail entries are candidates only. Cite file:line directly from results.
+An excerpt reports how much of the symbol it shows ("26 of 57 lines"). When a question needs every branch of a function — what disables a path, which cases are handled — a window is the wrong shape: expand it rather than answering from the part you were shown.
 Modes: 'answer' (default — top matches + graph + confidence), 'minimal' (bodies only, ~50% tokens), 'explore' (+ package overview, for an unfamiliar codebase).
 The defaults are calibrated for agent navigation. During normal exploration omit tuning knobs. If an excerpt omits required code, call expand_context with this request_id and the relevant rank; it hydrates the exact indexed body without rerunning semantic search. If it returns status:more, call continue_context with next_cursor until status:complete; do not replace continuation with grep or file reads.
 After acting on results, call record_feedback once with this call's request_id and the names you used.`
@@ -803,7 +806,14 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			fmt.Fprintf(&b, " — %s\n", teaser)
 		} else {
 			if sr.Detail == "excerpt" {
-				fmt.Fprintf(&b, " [excerpt %s; expand rank %d for full body]", visibleSpanText(sr), i+1)
+				// Say how much was dropped, not just what survived. A question
+				// that needs every branch of a long function ("what disables
+				// this path") is answered wrongly from a window, and the agent
+				// cannot know to expand unless the loss is on the page: the
+				// multi-hop A/B lost exactly one answer this way, naming two of
+				// seven conditions from a 110-line planner function.
+				fmt.Fprintf(&b, " [excerpt %s — %d of %d lines; expand rank %d for the rest]",
+					visibleSpanText(sr), visibleLineCount(sr), sr.EndLine-sr.StartLine+1, i+1)
 			}
 			b.WriteByte('\n')
 			start := sr.BodyStartLine
@@ -947,4 +957,21 @@ func anyGraphRefs(result retrieve.Result) bool {
 		}
 	}
 	return false
+}
+
+// visibleLineCount is how many lines of the symbol the response actually
+// carries: the sum of the windows when the trim kept several, otherwise the
+// single span.
+func visibleLineCount(sr retrieve.ScoredResult) int {
+	if len(sr.BodySegments) > 0 {
+		n := 0
+		for _, seg := range sr.BodySegments {
+			n += seg.Lines
+		}
+		return n
+	}
+	if sr.BodyEndLine >= sr.BodyStartLine {
+		return sr.BodyEndLine - sr.BodyStartLine + 1
+	}
+	return 0
 }

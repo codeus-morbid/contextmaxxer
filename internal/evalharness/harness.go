@@ -242,3 +242,34 @@ func (s *Server) FindMarkdown(query string, maxResults int, mode string) (string
 	}
 	return r.Result.Content[0].Text, nil
 }
+
+// FindMarkdownFull is FindMarkdown with evidence trimming disabled, so bodies
+// come back whole. It stands in for expand_context in single-shot harnesses:
+// expand_context addresses a rank inside a live server session, and a harness
+// that spawns a process per call has no session to address.
+func (s *Server) FindMarkdownFull(query string, maxResults int, mode string) (string, error) {
+	id := s.next()
+	args := map[string]any{
+		"query":                query,
+		"max_results":          maxResults,
+		"format":               "md",
+		"preserve_full_bodies": true,
+	}
+	if mode != "" {
+		args["mode"] = mode
+	}
+	if err := s.send(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{"name": "find_context", "arguments": args},
+	}); err != nil {
+		return "", err
+	}
+	r, err := s.recv(id)
+	if err != nil {
+		return "", err
+	}
+	if r.Result.IsError || len(r.Result.Content) == 0 {
+		return "", fmt.Errorf("tool error for %q", query)
+	}
+	return r.Result.Content[0].Text, nil
+}

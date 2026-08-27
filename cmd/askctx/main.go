@@ -21,6 +21,7 @@ func main() {
 	indexPath := flag.String("index", "./.contextmaxxer/index.db", "index db")
 	maxResults := flag.Int("max", 5, "max_results")
 	mode := flag.String("mode", "", "output mode: answer (default), minimal, explore")
+	full := flag.Bool("full", false, "return whole bodies instead of query-relevant windows (stands in for expand_context)")
 	flag.Parse()
 
 	query := flag.Arg(0)
@@ -36,7 +37,12 @@ func main() {
 	}
 	defer srv.Stop()
 
-	out, err := srv.FindMarkdown(query, *maxResults, *mode)
+	var out string
+	if *full {
+		out, err = srv.FindMarkdownFull(query, *maxResults, *mode)
+	} else {
+		out, err = srv.FindMarkdown(query, *maxResults, *mode)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "query:", err)
 		os.Exit(1)

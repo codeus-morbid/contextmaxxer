@@ -123,7 +123,10 @@ func TestRenderMarkdownKeepsGraphOnCompactAndMarksExcerpt(t *testing.T) {
 	}})
 	assert.Contains(t, out, "callees: pkg.Next (pkg/b.go:30-40@17)")
 	assert.Contains(t, out, "[callsite: 16 case enabled: | 17 Next()]")
-	assert.Contains(t, out, "[excerpt 140-140; expand rank 2 for full body]")
+	// The marker names what is missing, not just what is shown. A question that
+	// needs every branch of a function is answered wrongly from a window, and
+	// the agent cannot know to expand unless the loss is on the page.
+	assert.Contains(t, out, "[excerpt 140-140 — 1 of 81 lines; expand rank 2 for the rest]")
 
 	// The caveat is stated once, not appended to every graph line: repeated it
 	// measured at 84 of 1028 response tokens on cockroach (cmd/rspbreak).
