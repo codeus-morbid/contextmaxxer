@@ -614,7 +614,7 @@ func assignConfidence(scored []ScoredResult) {
 	}
 }
 
-func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []ScoredResult, filePaths map[int64]string) error {
+func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored []ScoredResult, filePaths map[int64]string) error {
 	if len(scored) == 0 {
 		return nil
 	}
@@ -649,11 +649,52 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 		}, true
 	}
 
+	// DECISION(2026-08): graph context is capped by rank, NOT by the body tier.
+	// Tying it to the tier looked like one rule instead of two, but the body
+	// tier also shrinks with session length (sessionCompactAfter), so from the
+	// fifth call onward an agent silently lost callers and callees for every
+	// result but the first — exactly when it is deepest in a chain. How much
+	// code to show and how much navigation to offer are different questions.
+	// Caught by cmd/chainprobe, which runs a whole chain in one session.
+	const maxGraphResults = 3
+
 	const (
 		maxCallerRefs = 3
 		maxCalleeRefs = 5
 	)
 	const staticUnverified = "static_unverified"
+
+	// DECISION(2026-08): graph refs are ranked against the query before the cap,
+	// not taken in source order. Measured on cockroach:
+	// adminSplitWithDescriptor has 30 callees and the response showed the first
+	// five, so splitTxnAttempt — called at line 558 of a 240-line function, and
+	// the whole point of the chain — could never appear. Source order is a
+	// lottery with respect to what was asked. Lexical overlap costs nothing and
+	// is measurable with cmd/chainprobe; escalate to the cross-encoder only if
+	// it proves insufficient.
+	qTokens := tokenizeForOverlap(req.Query)
+	rankRefs := func(edges []store.Edge, target func(store.Edge) int64) {
+		if len(qTokens) == 0 {
+			return
+		}
+		score := make(map[int64]float32, len(edges))
+		for _, e := range edges {
+			id := target(e)
+			sym, ok := allSymsByID[id]
+			if !ok {
+				continue
+			}
+			// Name only. A path bonus rewards callees that live in the same
+			// package as the caller, which is precisely backwards for chain
+			// following: measured on cockroach, it pushed storage.MVCCScanToCols
+			// out of batcheval.Scan's five shown callees in favour of batcheval
+			// siblings whose file path repeated the query words.
+			score[id] = overlapRatio(qTokens, sym.QualifiedName)
+		}
+		sort.SliceStable(edges, func(i, j int) bool {
+			return score[target(edges[i])] > score[target(edges[j])]
+		})
+	}
 
 	// DECISION(2026-08): call edges are path-insensitive, so every graph ref is
 	// marked unverified. Callsite windows hydrate for the top result only —
@@ -693,7 +734,7 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 		// agent has not chosen, and they measured at roughly an eighth of the
 		// response. One rule now covers both, so there is no second knob to keep
 		// in sync. REVISIT IF: an agent A/B shows file reads returning.
-		if scored[i].Detail == "compact" {
+		if i >= maxGraphResults {
 			continue
 		}
 		qn := scored[i].QualifiedName
@@ -703,6 +744,8 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 		if ownerOK {
 			callerEdges = callerEdgesByID[ownerSym.ID]
 		}
+		scored[i].CallersTotal = len(callerEdges)
+		rankRefs(callerEdges, func(e store.Edge) int64 { return e.Src })
 		if len(callerEdges) > maxCallerRefs {
 			callerEdges = callerEdges[:maxCallerRefs]
 		}
@@ -721,6 +764,8 @@ func enrichGraphContext(ctx context.Context, r *Retriever, _ Request, scored []S
 		if ownerOK {
 			calleeEdges = calleeEdgesByID[ownerSym.ID]
 		}
+		scored[i].CalleesTotal = len(calleeEdges)
+		rankRefs(calleeEdges, func(e store.Edge) int64 { return e.Dst })
 		if len(calleeEdges) > maxCalleeRefs {
 			calleeEdges = calleeEdges[:maxCalleeRefs]
 		}

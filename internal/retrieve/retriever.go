@@ -95,6 +95,12 @@ type ScoredResult struct {
 	// It differs from EndLine when Detail is "excerpt".
 	BodyEndLine int
 
+	// CallersTotal and CalleesTotal are how many graph edges exist before the
+	// display cap. Showing five of thirty without saying so is how the hop an
+	// agent came for goes missing in silence.
+	CallersTotal int
+	CalleesTotal int
+
 	// BodySegments describes the windows Body carries when the evidence trim
 	// keeps more than one. Body joins them with evidenceGapMarker; the segments
 	// carry each window's real first line so numbering stays honest across the

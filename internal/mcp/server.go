@@ -774,9 +774,14 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 	}
 
 	slash := func(p string) string { return strings.ReplaceAll(p, "\\", "/") }
-	writeRefs := func(label string, refs []retrieve.SymbolRef) {
+	// The cap is silent otherwise: a symbol with thirty callees showed five and
+	// said nothing, so the hop an agent came for could vanish without a trace.
+	writeRefs := func(label string, refs []retrieve.SymbolRef, total int) {
 		if len(refs) == 0 {
 			return
+		}
+		if total > len(refs) {
+			label = fmt.Sprintf("%s (%d of %d)", label, len(refs), total)
 		}
 		parts := make([]string, len(refs))
 		for i, r := range refs {
@@ -822,10 +827,10 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			}
 			fmt.Fprintf(&b, "```\n%s\n```\n", numberLines(sr.Body, start))
 		}
-		writeRefs("callers", sr.Callers)
-		writeRefs("callees", sr.Callees)
-		writeRefs("tests", sr.Tests)
-		writeRefs("siblings", sr.Siblings)
+		writeRefs("callers", sr.Callers, sr.CallersTotal)
+		writeRefs("callees", sr.Callees, sr.CalleesTotal)
+		writeRefs("tests", sr.Tests, len(sr.Tests))
+		writeRefs("siblings", sr.Siblings, len(sr.Siblings))
 		if len(sr.CompanionFiles) > 0 {
 			fmt.Fprintf(&b, "companions: %s\n", strings.Join(sr.CompanionFiles, "; "))
 		}
