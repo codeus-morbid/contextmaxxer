@@ -1101,3 +1101,45 @@ func TestApplyEvidenceSpansSingleWindowLeavesNoSegments(t *testing.T) {
 	require.Empty(t, results[0].BodySegments, "one window needs no segment list")
 	require.NotContains(t, results[0].Body, EvidenceGapMarker)
 }
+
+// The mode that promises whole symbols shipped the capped excerpt while the
+// header claimed the symbol's full line range: hydration lived inside window
+// selection, which this path skips. Measured on cockroach before the fix, 42
+// lines of a 128-line function presented as complete.
+func TestHydrateFullBodiesFetchesTheLosslessBody(t *testing.T) {
+	head := strings.Repeat("head\n", 30) + truncationMarker
+	full := strings.Repeat("head\n", 30) + strings.Repeat("tail\n", 70)
+	r := &Retriever{store: &mockStore{symbols: []store.Symbol{{
+		ID: 7, BodyExcerpt: head, FullBody: full,
+	}}}}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 200,
+		Body: head, Detail: "full",
+	}}
+
+	hydrateFullBodies(context.Background(), r, results)
+
+	require.NotContains(t, results[0].Body, truncationMarker, "full means full")
+	require.Contains(t, results[0].Body, "tail")
+	require.Equal(t, 100, results[0].BodyStartLine)
+	require.Equal(t, 200, results[0].BodyEndLine)
+}
+
+// A legacy index has no lossless body to fetch. The excerpt is then all there
+// is, and the response must report the lines it really carries rather than the
+// symbol's extent.
+func TestHydrateFullBodiesReportsWhatALegacyIndexCanGive(t *testing.T) {
+	head := strings.Repeat("head\n", 29) + truncationMarker
+	r := &Retriever{store: &mockStore{symbols: []store.Symbol{{
+		ID: 7, BodyExcerpt: head,
+	}}}}
+	results := []ScoredResult{{
+		SymbolID: 7, QualifiedName: "pkg.Long", StartLine: 100, EndLine: 200,
+		Body: head, Detail: "full",
+	}}
+
+	hydrateFullBodies(context.Background(), r, results)
+
+	require.Equal(t, "excerpt", results[0].Detail, "a capped body is an excerpt, whatever the caller asked for")
+	require.Less(t, results[0].BodyEndLine, 200, "must not claim the symbol's whole range")
+}

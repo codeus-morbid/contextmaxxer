@@ -340,3 +340,34 @@ func evidenceDot(a, b []float32) float32 {
 	}
 	return s
 }
+
+// hydrateFullBodies serves the PreserveFullBodies path. Hydration used to live
+// only inside window selection, which this path skips, so "full bodies" shipped
+// the capped excerpt while the header claimed the symbol's whole line range —
+// measured on cockroach, 42 lines of a 128-line function presented as complete,
+// with the truncation marker buried in the code. A mode that promises the whole
+// symbol has to fetch the whole symbol, and say so when it cannot.
+func hydrateFullBodies(ctx context.Context, r *Retriever, results []ScoredResult) {
+	for i := range results {
+		res := &results[i]
+		res.BodyStartLine = res.StartLine
+		res.BodyEndLine = res.EndLine
+		if res.Detail == "compact" || r.store == nil {
+			continue
+		}
+		if full, err := r.store.GetSymbolBody(ctx, res.SymbolID); err == nil && full.Body != "" {
+			res.Body = full.Body
+		}
+		// Trust the text, not the call: a legacy index has no lossless body to
+		// give and can hand back the capped excerpt either as an error or as a
+		// successful read. Whichever it does, a body still carrying the marker
+		// is an excerpt, and saying otherwise is the exact lie this path had.
+		if strings.Contains(res.Body, truncationMarker) {
+			res.Detail = "excerpt"
+			res.BodyEndLine = res.StartLine + strings.Count(res.Body, "\n")
+		}
+	}
+}
+
+// truncationMarker is what the extractor appends when it caps a body.
+const truncationMarker = "// ... [truncated]"

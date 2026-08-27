@@ -550,10 +550,7 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	if !req.PreserveFullBodies {
 		applyEvidenceSpans(ctx, r, req.Query, qvec, selected)
 	} else {
-		for i := range selected {
-			selected[i].BodyStartLine = selected[i].StartLine
-			selected[i].BodyEndLine = selected[i].EndLine
-		}
+		hydrateFullBodies(ctx, r, selected)
 	}
 	stats.EvidenceDuration = time.Since(tEv)
 	totalTokens := 0
