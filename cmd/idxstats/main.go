@@ -12,6 +12,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 2 && os.Args[1] == "-symbol" {
+		edgesFor(os.Args[3], os.Args[2])
+		return
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: idxstats <index.db> [more.db ...]")
 		os.Exit(2)
@@ -105,4 +109,57 @@ func contentVersion(path string) string {
 		return "?"
 	}
 	return v
+}
+
+// edgesFor prints how many call edges a symbol actually has, next to the limit
+// the response applies. A chain hop can be missing from a response either
+// because the extractor never found the edge or because the display kept only
+// the first few — those need different fixes, and only this tells them apart.
+func edgesFor(path, qname string) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		fmt.Println("open:", err)
+		return
+	}
+	defer db.Close()
+	rows, err := db.Query(`
+		SELECT s.qualified_name, s.id,
+		       (SELECT COUNT(*) FROM edges e WHERE e.src = s.id) AS callees,
+		       (SELECT COUNT(*) FROM edges e WHERE e.dst = s.id) AS callers
+		FROM symbols s WHERE s.qualified_name LIKE ?`, "%"+qname)
+	if err != nil {
+		fmt.Println("query:", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var id, callees, callers int
+		if err := rows.Scan(&name, &id, &callees, &callers); err != nil {
+			return
+		}
+		fmt.Printf("%-58s id=%-7d callees=%-4d callers=%-4d\n", name, id, callees, callers)
+		listEdges(db, id)
+	}
+}
+
+// listEdges names what a symbol actually calls. Counting edges tells you the
+// display cap is biting; naming them tells you whether the edge you expected
+// is even there.
+func listEdges(db *sql.DB, id int) {
+	rows, err := db.Query(`
+		SELECT s.qualified_name, e.call_line FROM edges e
+		JOIN symbols s ON s.id = e.dst WHERE e.src = ? ORDER BY e.call_line`, id)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var line int
+		if err := rows.Scan(&name, &line); err != nil {
+			return
+		}
+		fmt.Printf("    -> %-52s @%d\n", name, line)
+	}
 }

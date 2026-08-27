@@ -107,7 +107,9 @@ func main() {
 			default:
 				missed++
 				if *verbose {
-					fmt.Printf("  MISSED      %-46s -> %s\n", from, to)
+					seen := append(append([]string{}, res.Callers[rank]...), res.Callees[rank]...)
+					fmt.Printf("  MISSED      %-46s -> %-44s rank=%d saw=%d %v\n",
+						from, to, rank+1, len(seen), seen)
 				}
 			}
 		}
