@@ -28,6 +28,12 @@ type toolPayload struct {
 		Relevance float32 `json:"relevance"`
 		Lines     string  `json:"lines"`
 		Visible   string  `json:"visible_lines"`
+		Callers   []struct {
+			Name string `json:"name"`
+		} `json:"callers"`
+		Callees []struct {
+			Name string `json:"name"`
+		} `json:"callees"`
 	} `json:"symbols"`
 	RetrievalHealth *struct {
 		Confidence  string  `json:"confidence"`
@@ -44,8 +50,13 @@ type Result struct {
 	// response actually shows after evidence trimming. They differ exactly
 	// when the answer may have been trimmed away, which ranking metrics
 	// cannot see — see cmd/deepprobe.
-	Lines      []string
-	Visible    []string
+	Lines   []string
+	Visible []string
+	// Callers and Callees are the graph refs shown for each result. They are
+	// what makes a chain followable without a second search, so cmd/chainprobe
+	// measures exactly them.
+	Callers    [][]string
+	Callees    [][]string
 	Confidence string  // "" when the server omitted retrieval_health
 	TopGap     float32 // relative top1-top2 gap as the server computed it
 }
@@ -188,6 +199,8 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		Relevance: make([]float32, len(p.Symbols)),
 		Lines:     make([]string, len(p.Symbols)),
 		Visible:   make([]string, len(p.Symbols)),
+		Callers:   make([][]string, len(p.Symbols)),
+		Callees:   make([][]string, len(p.Symbols)),
 	}
 	for i, sym := range p.Symbols {
 		out.Names[i] = sym.Name
@@ -195,6 +208,12 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		out.Relevance[i] = sym.Relevance
 		out.Lines[i] = sym.Lines
 		out.Visible[i] = sym.Visible
+		for _, c := range sym.Callers {
+			out.Callers[i] = append(out.Callers[i], c.Name)
+		}
+		for _, c := range sym.Callees {
+			out.Callees[i] = append(out.Callees[i], c.Name)
+		}
 	}
 	if p.RetrievalHealth != nil {
 		out.Confidence = p.RetrievalHealth.Confidence
