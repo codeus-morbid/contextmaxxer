@@ -27,6 +27,8 @@ func TestNewServer_Constructs(t *testing.T) {
 func TestFindContextToolContractPreservesCompactDefaults(t *testing.T) {
 	for _, fragment := range []string{
 		"compact tail entries are candidates only",
+		"LARGE codebase you do not already know",
+		"use grep instead",
 		"static candidates, not proof",
 		"path_status=static_unverified",
 		"verify the branch, feature flag, protocol, or dispatch discriminator",
