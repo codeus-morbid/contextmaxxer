@@ -171,6 +171,22 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 	loadedLangMaps := make(map[string]bool)
 	var edgeWork []edgeExtractionWork
 
+	// DECISION(2026-08): every parsed tree is registered for closing here.
+	// tree_sitter.Tree wraps a C AST that the binding frees only in Close and
+	// guards with no finalizer, so a dropped tree is native memory held until
+	// the process exits. Trees cannot be closed where they are parsed — the
+	// edge pass below re-walks them after every file is known — and several
+	// paths between parse and that pass `continue` out, so one list closed on
+	// the way out is the only shape that covers all of them. Within a single
+	// Index call this changes little; the leak that matters is `--watch`, where
+	// Index runs again on every change and the last run's ASTs are never freed.
+	var openTrees []*tree_sitter.Tree
+	defer func() {
+		for _, t := range openTrees {
+			t.Close()
+		}
+	}()
+
 	records, errs := idx.walker.Walk(ctx, root)
 
 	for rec := range records {
@@ -191,6 +207,7 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 			idx.log.Warn("parse error", "path", rec.Path, "lang", rec.Language, "err", err)
 			continue
 		}
+		openTrees = append(openTrees, tree)
 
 		extractor, ok := idx.extractor(rec.Language)
 		if !ok {
