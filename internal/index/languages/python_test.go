@@ -111,3 +111,63 @@ func TestPyExtractor_EdgesUniqueSuffixOnly(t *testing.T) {
 	unique := ext.Edges(tree, source, map[string]int64{"run": 1, "A.save": 2})
 	requireEdge(t, unique, 1, 2, 2)
 }
+
+func TestPyExtractor_SelfCallBindsToOwnClass(t *testing.T) {
+	// `self.clean()` where "clean" also exists on another class: the global
+	// unique-suffix guard drops it, so the receiver has to decide.
+	source := []byte("class A:\n    def clean(self, v):\n        return v\n\n    def run(self, v):\n        return self.clean(v)\n\nclass B:\n    def clean(self, v):\n        return v\n")
+	p := NewPyParser()
+	tree := p.Parse(source, nil)
+	ext := &pyExtractor{}
+
+	nameToID := map[string]int64{"A": 1, "A.clean": 2, "A.run": 3, "B": 4, "B.clean": 5}
+	edges := ext.Edges(tree, source, nameToID)
+
+	requireEdge(t, edges, 3, 2, 6)
+	requireNoEdge(t, edges, 3, 5)
+}
+
+func TestPyExtractor_SelfCallWalksBaseClasses(t *testing.T) {
+	// Django's WSGIHandler.__call__ -> BaseHandler.get_response: the method is
+	// inherited, and the name repeats, so only the base walk finds it.
+	source := []byte("class Base:\n    def get_response(self, r):\n        return r\n\nclass Handler(Base):\n    def __call__(self, r):\n        return self.get_response(r)\n\nclass Other:\n    def get_response(self, r):\n        return r\n")
+	p := NewPyParser()
+	tree := p.Parse(source, nil)
+	ext := &pyExtractor{}
+
+	nameToID := map[string]int64{
+		"Base": 1, "Base.get_response": 2,
+		"Handler": 3, "Handler.__call__": 4,
+		"Other": 5, "Other.get_response": 6,
+	}
+	edges := ext.Edges(tree, source, nameToID)
+
+	requireEdge(t, edges, 4, 2, 7)
+	requireNoEdge(t, edges, 4, 6)
+}
+
+func TestPyExtractor_ForeignReceiverStaysConservative(t *testing.T) {
+	// Only `self`/`cls` is a known type. An arbitrary receiver must still fall
+	// through to the unique-suffix guard, or the Django hairball comes back.
+	source := []byte("def run(bf):\n    return bf.clean(1)\n")
+	p := NewPyParser()
+	tree := p.Parse(source, nil)
+	ext := &pyExtractor{}
+
+	edges := ext.Edges(tree, source, map[string]int64{"run": 1, "A.clean": 2, "B.clean": 3})
+	requireNoEdge(t, edges, 1, 2)
+	requireNoEdge(t, edges, 1, 3)
+}
+
+func TestPyExtractor_SelfCallOverrideWinsOverBase(t *testing.T) {
+	source := []byte("class Base:\n    def clean(self, v):\n        return v\n\nclass Child(Base):\n    def clean(self, v):\n        return v\n\n    def run(self, v):\n        return self.clean(v)\n")
+	p := NewPyParser()
+	tree := p.Parse(source, nil)
+	ext := &pyExtractor{}
+
+	nameToID := map[string]int64{"Base": 1, "Base.clean": 2, "Child": 3, "Child.clean": 4, "Child.run": 5}
+	edges := ext.Edges(tree, source, nameToID)
+
+	requireEdge(t, edges, 5, 4, 10)
+	requireNoEdge(t, edges, 5, 2)
+}
