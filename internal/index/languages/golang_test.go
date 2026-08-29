@@ -164,7 +164,12 @@ func Caller(s *Store) {
 	requireEdge(t, edges, 1, 2, 4)
 }
 
-func TestGoExtractor_EdgesSkipAmbiguousSelectorSuffix(t *testing.T) {
+func TestGoExtractor_DeclaredParameterTypeSettlesAnAmbiguousSuffix(t *testing.T) {
+	// This case used to assert NO edge at all: "Save" has two owners, and the
+	// global suffix guard refuses a name it cannot pin down. But the source
+	// pins it down — s is declared *Store in mypkg — so refusing was a false
+	// negative, not caution. The guard still applies when the type is unknown
+	// (TestGoExtractor_UnknownParameterTypeStaysConservative).
 	source := []byte(`package mypkg
 
 func Caller(s *Store) {
@@ -183,7 +188,7 @@ func Caller(s *Store) {
 
 	edges := ext.Edges(tree, source, nameToID)
 
-	requireNoEdge(t, edges, 1, 2)
+	requireEdge(t, edges, 1, 2, 4)
 	requireNoEdge(t, edges, 1, 3)
 }
 
@@ -315,4 +320,114 @@ func requireNoEdge(t *testing.T, edges []store.Edge, src, dst int64) {
 			require.Failf(t, "unexpected edge", "%d -> %d found in %+v", src, dst, edges)
 		}
 	}
+}
+
+func TestGoExtractor_ParameterReceiverResolves(t *testing.T) {
+	// The name AdminTransferLease is carried by two types, so the global
+	// unique-suffix guard drops it; only the parameter's declared type decides.
+	source := []byte(`package kvserver
+
+type Replica struct{}
+
+func (r *Replica) AdminTransferLease() error { return nil }
+
+type Store struct{}
+
+func (s *Store) AdminTransferLease() error { return nil }
+
+type leaseQueue struct{}
+
+func (lq *leaseQueue) process(repl *Replica) error {
+	return repl.AdminTransferLease()
+}
+`)
+	p := NewGoParser()
+	tree := p.Parse(source, nil)
+	ext := &goExtractor{}
+
+	nameToID := map[string]int64{
+		"kvserver.Replica": 1, "kvserver.Replica.AdminTransferLease": 2,
+		"kvserver.Store": 3, "kvserver.Store.AdminTransferLease": 4,
+		"kvserver.leaseQueue": 5, "kvserver.leaseQueue.process": 6,
+	}
+	edges := ext.Edges(tree, source, nameToID)
+
+	requireEdge(t, edges, 6, 2, 14)
+	requireNoEdge(t, edges, 6, 4)
+}
+
+func TestGoExtractor_ParameterReceiverKeepsReceiversApart(t *testing.T) {
+	// Two parameters of different known types calling the same method name are
+	// two edges, not one — the selector fallback collapses them by name alone.
+	source := []byte(`package p
+
+type A struct{}
+
+func (a *A) Run() {}
+
+type B struct{}
+
+func (b *B) Run() {}
+
+func drive(x *A, y *B) {
+	x.Run()
+	y.Run()
+}
+`)
+	p := NewGoParser()
+	tree := p.Parse(source, nil)
+	ext := &goExtractor{}
+
+	nameToID := map[string]int64{
+		"p.A": 1, "p.A.Run": 2, "p.B": 3, "p.B.Run": 4, "p.drive": 5,
+	}
+	edges := ext.Edges(tree, source, nameToID)
+
+	requireEdge(t, edges, 5, 2, 12)
+	requireEdge(t, edges, 5, 4, 13)
+}
+
+func TestGoExtractor_UnknownParameterTypeStaysConservative(t *testing.T) {
+	// A type with no indexed methods must fall through to the ambiguous-suffix
+	// guard, not invent an edge to a namesake.
+	source := []byte(`package p
+
+func drive(x Unindexed) {
+	x.Save()
+}
+`)
+	p := NewGoParser()
+	tree := p.Parse(source, nil)
+	ext := &goExtractor{}
+
+	edges := ext.Edges(tree, source, map[string]int64{"p.drive": 1, "p.A.Save": 2, "p.B.Save": 3})
+	requireNoEdge(t, edges, 1, 2)
+	requireNoEdge(t, edges, 1, 3)
+}
+
+func TestGoExtractor_SliceParameterIsNotAReceiver(t *testing.T) {
+	// []Replica has no method set to bind to; the declared-type shortcut must
+	// not fire on it.
+	source := []byte(`package p
+
+type Replica struct{}
+
+func (r *Replica) Send() {}
+
+type Other struct{}
+
+func (o *Other) Send() {}
+
+func drive(rs []Replica, m map[string]Replica) {
+	rs.Send()
+	m.Send()
+}
+`)
+	p := NewGoParser()
+	tree := p.Parse(source, nil)
+	ext := &goExtractor{}
+
+	nameToID := map[string]int64{"p.Replica": 1, "p.Replica.Send": 2, "p.Other": 4, "p.Other.Send": 5, "p.drive": 3}
+	edges := ext.Edges(tree, source, nameToID)
+	requireNoEdge(t, edges, 3, 2)
 }

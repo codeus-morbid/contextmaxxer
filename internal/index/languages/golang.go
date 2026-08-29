@@ -5,6 +5,7 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
@@ -101,6 +102,7 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 			continue
 		}
 		shadowedNames := goFunctionBindingNames(child, source)
+		paramTypes := goParamTypes(child, source)
 
 		cursor := tree_sitter.NewQueryCursor()
 		matches := cursor.Matches(q, body, source)
@@ -167,6 +169,35 @@ func (e *goExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 						edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
 					}
 					continue
+				}
+			}
+
+			// DECISION(2026-08): the same knowledge, applied to the other named
+			// thing whose type the source writes down. `repl.AdminTransferLease()`
+			// inside leaseQueue.process had no edge — the receiver branch only
+			// knows `lq`, and AdminTransferLease is a name Replica and Store both
+			// carry, so the unique-suffix fallback dropped it. TypeScript already
+			// binds `this.field` by its declared type; this is the Go counterpart
+			// for parameters. ASSUMES: a parameter is not reassigned to another
+			// type inside the body. REVISIT IF: locals from `:=` need it too,
+			// which would mean inferring constructor return types.
+			if isSelector && recvNode.Kind() == "identifier" {
+				recvText := nodeText(recvNode, source)
+				if t, known := paramTypes[recvText]; known {
+					owner := pkg + "." + t
+					if strings.Contains(t, ".") {
+						// Already package-qualified in the source: *cluster.Settings.
+						owner = t
+					}
+					if dstID, found := nameToID[owner+"."+callee]; found && dstID != srcID {
+						// Keyed by receiver: two parameters of known types calling
+						// the same method name are two different edges.
+						if seenKey := "param:" + recvText + "." + callee; !seen[seenKey] {
+							seen[seenKey] = true
+							edges = appendEdgeUniq(edges, store.Edge{Src: srcID, Dst: dstID, Kind: store.EdgeCalls, Weight: 1.0, CallLine: callLine})
+						}
+						continue
+					}
 				}
 			}
 
@@ -423,6 +454,62 @@ func goMethodQualifiedName(node *tree_sitter.Node, source []byte, pkg string) st
 		return pkg + "." + receiverType + "." + name
 	}
 	return pkg + "." + name
+}
+
+// goParamTypes maps each parameter of fn to the named type it declares. Only
+// what the source writes down — nothing is inferred from assignments.
+func goParamTypes(fn *tree_sitter.Node, source []byte) map[string]string {
+	params := fn.ChildByFieldName("parameters")
+	if params == nil {
+		return nil
+	}
+	var out map[string]string
+	for i := range params.ChildCount() {
+		decl := params.Child(i)
+		if decl == nil {
+			continue
+		}
+		if decl.Kind() != "parameter_declaration" && decl.Kind() != "variadic_parameter_declaration" {
+			continue
+		}
+		typeNode := decl.ChildByFieldName("type")
+		if typeNode == nil {
+			continue
+		}
+		typeName := goNamedTypeName(nodeText(typeNode, source))
+		if typeName == "" {
+			continue
+		}
+		for j := range decl.ChildCount() {
+			c := decl.Child(j)
+			if c == nil || c.Kind() != "identifier" {
+				continue
+			}
+			if out == nil {
+				out = make(map[string]string)
+			}
+			out[nodeText(c, source)] = typeName
+		}
+	}
+	return out
+}
+
+// goNamedTypeName reduces a declared type to the name a method set hangs off: a
+// named type, optionally a pointer to one, optionally package-qualified.
+// Anything else — slices, maps, channels, funcs, generics, inline structs — has
+// no qualified name in the index to bind a call to.
+func goNamedTypeName(text string) string {
+	t := strings.TrimSpace(text)
+	t = strings.TrimSpace(strings.TrimPrefix(t, "*"))
+	if t == "" {
+		return ""
+	}
+	for _, r := range t {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '.' {
+			return ""
+		}
+	}
+	return t
 }
 
 func goReceiverType(paramList *tree_sitter.Node, source []byte) string {
