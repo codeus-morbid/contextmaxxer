@@ -62,7 +62,55 @@ var DefaultBodyFTSWeight float32 = 1.0
 // recall on large corpora where the base model was saturated.
 var DefaultChunkVecWeight float32 = 0
 
+// How many navigation offers a result carries. Env-tunable because this is a
+// curve and not a constant: cmd/chainprobe prices what a wider list buys (a hop
+// the agent can take without a second search) and cmd/rspbreak prices what it
+// costs (~5 tokens a name).
+//
+// DECISION(2026-08): swept together, chain hops followable / response tokens
+// on cockroach + django + postgres. results/top/rest/callsites:
+//
+//	3/5/5/5    0.78 0.77 0.82   1082  (previous default)
+//	3/40/5/5   0.89 0.77 1.00   1180
+//	5/40/5/5   0.89 0.85 1.00   1340  <- shipped
+//	flat 5/40  0.89 0.85 1.00   1600  (one cap for every result and callsite)
+//
+// Six of the eight remaining chain misses were edges the index HELD and the
+// response cut: 35th of 45 callees on exec_simple_query, 30th of 30 on
+// adminSplitWithDescriptor, and Field.clean sitting at rank 5 where the cap was
+// 3. Widening only the top result, and capping callsite windows separately from
+// the name list, buys 260 of the 518 tokens back.
+//
+// results matches the served max_results on purpose: a result we return but
+// give no navigation to is the same silent asymmetry that let graph refs vanish
+// with the body tier. ASSUMES: the token cost is worth avoiding a search the
+// agent has to invent a query for. REVISIT IF: response weight stops being a
+// small fraction of what an agent spends per turn.
+var (
+	graphMaxResults     = 5
+	graphMaxCallers     = 3
+	graphMaxCallees     = 40
+	graphMaxCalleesRest = 5
+	graphMaxCallsites   = 5
+)
+
 func init() {
+	for _, knob := range []struct {
+		env    string
+		target *int
+	}{
+		{"CONTEXTMAXXER_GRAPH_RESULTS", &graphMaxResults},
+		{"CONTEXTMAXXER_GRAPH_CALLERS", &graphMaxCallers},
+		{"CONTEXTMAXXER_GRAPH_CALLEES", &graphMaxCallees},
+		{"CONTEXTMAXXER_GRAPH_CALLEES_REST", &graphMaxCalleesRest},
+		{"CONTEXTMAXXER_GRAPH_CALLSITES", &graphMaxCallsites},
+	} {
+		if v := os.Getenv(knob.env); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				*knob.target = n
+			}
+		}
+	}
 	if v := os.Getenv("CONTEXTMAXXER_BODY_FTS_WEIGHT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 32); err == nil && f >= 0 {
 			DefaultBodyFTSWeight = float32(f)
@@ -211,7 +259,18 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		for id, sc := range rrfScores {
 			all = append(all, rrfEntry{id, sc})
 		}
-		sort.Slice(all, func(i, j int) bool { return all[i].score > all[j].score })
+		// Tie-break on ID. These slices are built by ranging a map, so equal
+		// scores would otherwise be ordered by Go's randomized map iteration and
+		// an unstable sort — the same query returning different results on two
+		// runs of the same binary, and every before/after comparison carrying an
+		// unmeasured noise floor. RRF ties are common: two symbols each seeded by
+		// one channel at the same rank score identically.
+		sort.Slice(all, func(i, j int) bool {
+			if all[i].score != all[j].score {
+				return all[i].score > all[j].score
+			}
+			return all[i].id < all[j].id
+		})
 
 		limit := req.SeedK
 		if limit > len(all) {
@@ -290,7 +349,12 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	for id, sc := range ranks {
 		pprEntries = append(pprEntries, pprEntry{id: id, score: sc})
 	}
-	sort.Slice(pprEntries, func(i, j int) bool { return pprEntries[i].score > pprEntries[j].score })
+	sort.Slice(pprEntries, func(i, j int) bool {
+		if pprEntries[i].score != pprEntries[j].score {
+			return pprEntries[i].score > pprEntries[j].score
+		}
+		return pprEntries[i].id < pprEntries[j].id
+	})
 	pprRank := make(map[int64]int, len(pprEntries))
 	for i, entry := range pprEntries {
 		pprRank[entry.id] = i + 1
@@ -317,7 +381,12 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		fusedScores[id] = fused
 		allRanked = append(allRanked, ranked{id, fused})
 	}
-	sort.Slice(allRanked, func(i, j int) bool { return allRanked[i].score > allRanked[j].score })
+	sort.Slice(allRanked, func(i, j int) bool {
+		if allRanked[i].score != allRanked[j].score {
+			return allRanked[i].score > allRanked[j].score
+		}
+		return allRanked[i].id < allRanked[j].id
+	})
 
 	limit := req.MaxResults
 	if r.reranker != nil && req.RerankK > limit {
@@ -656,12 +725,9 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 	// result but the first — exactly when it is deepest in a chain. How much
 	// code to show and how much navigation to offer are different questions.
 	// Caught by cmd/chainprobe, which runs a whole chain in one session.
-	const maxGraphResults = 3
-
-	const (
-		maxCallerRefs = 3
-		maxCalleeRefs = 5
-	)
+	maxGraphResults := graphMaxResults
+	maxCallerRefs, maxCalleeRefs := graphMaxCallers, graphMaxCallees
+	maxCalleeRefsRest := graphMaxCalleesRest
 	const staticUnverified = "static_unverified"
 
 	// DECISION(2026-08): graph refs are ranked against the query before the cap,
@@ -766,9 +832,28 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 		}
 		scored[i].CalleesTotal = len(calleeEdges)
 		rankRefs(calleeEdges, func(e store.Edge) int64 { return e.Dst })
-		if len(calleeEdges) > maxCalleeRefs {
-			calleeEdges = calleeEdges[:maxCalleeRefs]
+		// DECISION(2026-08): the callee list is scaled by rank, the way evidence
+		// windows already are. A flat wide list bought chain hops (postgres 0.82
+		// -> 1.00 at 40) but pushed graph refs from 35% to 56% of the response
+		// and cost 518 tokens on EVERY answer, while the hops it saves happen
+		// only when the agent is following a chain. Measured on chainprobe, every
+		// hop the wide list won was won at rank 1 — the symbol the agent named.
+		// REVISIT IF: chains start being followed from a result the query did not
+		// name.
+		calleeCap := maxCalleeRefsRest
+		if i == 0 {
+			calleeCap = maxCalleeRefs
 		}
+		if len(calleeEdges) > calleeCap {
+			calleeEdges = calleeEdges[:calleeCap]
+		}
+		// DECISION(2026-08): a callsite window is capped separately from the name
+		// list. They used to rise together, so widening the top result's callees
+		// from 5 to 40 dragged inline callsite code from 67 to 177 tokens — the
+		// names are what make the next hop findable, the surrounding branch is a
+		// bonus for the few most likely ones. REVISIT IF: agents start following
+		// callees from deep in the list without reading the callsite first.
+		callsites := 0
 		for _, edge := range calleeEdges {
 			if ref, ok := symToRef(edge.Dst); ok {
 				// A call edge to a non-callable is always a suffix-collision
@@ -779,8 +864,9 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 				}
 				ref.CallLine = edge.CallLine
 				ref.PathStatus = staticUnverified
-				if i == 0 {
+				if i == 0 && callsites < graphMaxCallsites {
 					ref.CallSite = callSiteFor(edge.Src, edge.CallLine)
+					callsites++
 				}
 				scored[i].Callees = append(scored[i].Callees, ref)
 			}
