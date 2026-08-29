@@ -106,6 +106,9 @@ under tens of milliseconds.
 The MCP server exposes:
 
 - **find_context** — ranked, line-numbered symbols with graph context;
+- **expand_context** — the full indexed body of one result, when its excerpt
+  cut the branch you needed; no second semantic search;
+- **continue_context** — the next page when a response reports `status:more`;
 - **record_feedback** — optional usefulness labels tied to a retrieval request.
 
 With watch enabled, changed files are re-indexed incrementally. A fast index can

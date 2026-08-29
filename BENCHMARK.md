@@ -64,11 +64,23 @@ Two paired sonnet sub-agents answered the 5 questions: one restricted to
 **6.4× fewer tool calls, 3× faster, equal correctness.** Raw token cost is near
 parity — the agent's own base context (system prompt + task, re-read every turn)
 dominates total spend, so the win is round-trips, latency and context-window
-headroom, not raw tokens. The gap widens with codebase size and session length.
+headroom, not raw tokens.
 
 > Reproducing the *retrieval* (the `query` commands above) is turnkey.
 > Reproducing the full *agent* table needs an MCP host (Claude Code / Cursor) and
 > a sub-agent harness; the numbers above are a single run, no cherry-picking.
+
+**How much a single run is worth (2026-08).** Two runs of the *same* arm, same
+prompt, same binary, same repo returned 52.1K and 81.8K variable tokens — a 57%
+spread, wider than most of the between-repo differences on this page. The spread
+comes from a discrete choice the model makes (how often it asks for a full body),
+so it does not average away within a run. Read every ratio here as one sample:
+the direction of the large effects (tool calls, source reads) is stable across
+every run we have, but **differences below roughly 2× are not distinguishable
+from run-to-run noise**, and no claim on this page about an effect growing with
+codebase size survives that error bar. Deterministic probes were built for this
+reason: `cmd/chainprobe` prices call-chain navigability and `cmd/rspbreak` prices
+the response, both without an agent in the loop.
 
 **Replication on CockroachDB (v0.1.0-beta.5, 2026-07):** same paired-sonnet
 protocol, 6 deliberately paraphrastic questions (load-based splits, deadlock
@@ -83,10 +95,12 @@ unfamiliar code.
 ## Bigger task: end-to-end trace, and where the edge begins
 
 Single discovery questions understate the tool — they're dominated by the agent's
-fixed base context. On a *multi-step* task the discovery efficiency compounds, and
-the advantage scales with codebase size. We ran the same paired-Sonnet A/B on two
-public repos, each tracing one signal end-to-end across packages, after improving
-call-graph completeness (type-aware callee resolution):
+fixed base context. On a *multi-step* task the discovery efficiency compounds. We
+ran the same paired-Sonnet A/B on two public repos, each tracing one signal
+end-to-end across packages, after improving call-graph completeness (type-aware
+callee resolution). Whether the advantage also *scales* with codebase size is a
+claim this page used to make and no longer does: the runs that would establish it
+are single samples on a measurement whose repeat spread is 57%.
 
 - **Prometheus** (~8.7k symbols): a sample's lifecycle — scrape → parse → append →
   WAL → head → compaction → query read-back.
@@ -109,20 +123,21 @@ cache).
 
 **The edge is two-stage:**
 
-- **Operations, source reads, and latency win at every scale, and grow with it.**
-  At ~9k symbols: 3.9× fewer tool calls, **0 file reads vs 13**, 2.7× faster. At
-  90k: 6.1× fewer calls, **0 vs 28 reads**, 4.4× faster. The tool arm follows the
-  call graph (`callers`/`callees` + `call_line`) instead of opening files, so it
-  holds ~1 query per hop while grep's round-trips and reads climb with size.
+- **Operations, source reads and latency win at every scale measured.** At ~9k
+  symbols: 3.9× fewer tool calls, **0 file reads vs 13**, 2.7× faster. At 90k:
+  6.1× fewer calls, **0 vs 28 reads**, 4.4× faster. The tool arm follows the call
+  graph (`callers`/`callees` + `call_line`) instead of opening files, so it holds
+  ~1 query per hop. **Zero source reads is the one result that reproduces in every
+  run**; the ratios are single samples (see the variance note above), and the
+  spread between 3.9× and 6.1× is not evidence that the advantage grows with size
+  — that comparison sits inside the error bar.
 
-- **The raw-token win grows with the codebase.** 1.34× on Prometheus, **1.77× on
-  CockroachDB** — driven by the reads: on a small repo grep's file reads are
-  relatively cheap, so token totals are closer; on deep code those reads get
-  expensive, and eliminating them (0 vs 28) opens the gap. The tool arm's spend is
-  notably *stable* across scale (64k → 62k tokens) while grep's climbs (87k →
-  110k). An even earlier run measured CockroachDB tokens at parity, when the call
-  graph was incomplete and the tool arm still had to read ~10 files; completing the
-  graph dropped that to **0 reads**.
+- **Token totals are close, and the direction is not settled.** 1.34× on
+  Prometheus, 1.77× on CockroachDB, and an earlier CockroachDB run at parity when
+  the call graph was incomplete and the tool arm still read ~10 files. Three
+  samples spanning 1.0× to 1.77× on a measurement whose repeat spread is 57% do
+  not establish a trend either way. What is structural: the tool arm's spend does
+  not climb with reads, because it does not read (0 vs 28).
 
 - **It generalizes beyond Go.** Django (Python, 11k symbols): the tool arm still
   traced the whole request lifecycle (WSGI → middleware → routing → view → ORM →
