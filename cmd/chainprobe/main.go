@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"unicode"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/evalharness"
 )
@@ -145,25 +144,23 @@ func sameSymbol(a, b string) bool {
 	return strings.HasSuffix(a, "."+b) || strings.HasSuffix(b, "."+a)
 }
 
-// identifierWords turns a qualified name into the kind of phrase a caller
-// would type. Querying the raw name would let exact lexical match do the work
-// and measure something easier than the real task.
+// identifierWords turns a qualified name into the kind of phrase a caller would
+// type: the qualifier separated from the identifier, the identifier itself left
+// whole.
+//
+// It used to split camelCase as well, on the theory that querying the raw name
+// would let exact lexical match do the work. That overshot. `ResolveIntent` is
+// one token to every channel we have, and matches its one definition; "resolve
+// intent" is a description that a dozen namesakes answer equally well, so
+// batcheval.ResolveIntent fell to rank 7 behind a five-line no-op stub. Asked
+// as "ResolveIntent", or by its docstring, or as "where is the ResolveIntent
+// command evaluated", it comes back first. The split was manufacturing misses
+// that no caller would ever hit.
 func identifierWords(qname string) string {
-	var b strings.Builder
-	prev := rune(0)
-	for _, r := range qname {
-		switch {
-		case r == '.' || r == '_' || r == '/':
-			b.WriteRune(' ')
-		case unicode.IsUpper(r) && (unicode.IsLower(prev) || unicode.IsDigit(prev)):
-			b.WriteRune(' ')
-			b.WriteRune(unicode.ToLower(r))
-		default:
-			b.WriteRune(unicode.ToLower(r))
-		}
-		prev = r
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
+	parts := strings.FieldsFunc(qname, func(r rune) bool {
+		return r == '.' || r == '_' || r == '/'
+	})
+	return strings.Join(parts, " ")
 }
 
 func loadChains(path string) ([]chain, error) {
