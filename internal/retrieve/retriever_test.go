@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
@@ -20,6 +21,11 @@ type mockStore struct {
 	ftsResult      []store.ScoredSymbol
 	bodyFTSResult  []store.ScoredSymbol
 	chunkVecResult []store.ScoredSymbol
+	// metaCache mirrors production, where ListSymbolMeta is served from a cache
+	// and hands back the SAME backing array every call. The graph memo keys its
+	// freshness on slice identity, so a mock that rebuilds the slice silently
+	// disables the cache and hides every bug that lives in shared memo state.
+	metaCache []store.Symbol
 }
 
 func (m *mockStore) SearchByVectorScored(_ context.Context, _ []float32, k int) ([]store.ScoredSymbol, error) {
@@ -79,6 +85,9 @@ func (m *mockStore) ListAllSymbolIDs(_ context.Context) ([]int64, error) {
 func (m *mockStore) ListSymbolMeta(ctx context.Context) ([]store.Symbol, error) {
 	// The mock keeps full symbols; production strips text columns, which the
 	// pipeline treats as an optimization only, so serving them is harmless.
+	if m.metaCache != nil {
+		return m.metaCache, nil
+	}
 	return m.GetSymbolsByIDs(ctx, m.ids)
 }
 
@@ -1142,4 +1151,89 @@ func TestHydrateFullBodiesReportsWhatALegacyIndexCanGive(t *testing.T) {
 
 	require.Equal(t, "excerpt", results[0].Detail, "a capped body is an excerpt, whatever the caller asked for")
 	require.Less(t, results[0].BodyEndLine, 200, "must not claim the symbol's whole range")
+}
+
+// graphContaminationFixture builds one hub symbol with three callees whose
+// names sort differently under different queries.
+func graphContaminationFixture() *mockStore {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, Name: "Hub", Kind: "function", QualifiedName: "pkg.Hub", StartLine: 1, EndLine: 10, BodyExcerpt: "func Hub() {}"},
+		{ID: 2, FileID: 10, Name: "AlphaWriter", Kind: "function", QualifiedName: "pkg.AlphaWriter", StartLine: 11, EndLine: 20, BodyExcerpt: "func AlphaWriter() {}"},
+		{ID: 3, FileID: 10, Name: "BetaReader", Kind: "function", QualifiedName: "pkg.BetaReader", StartLine: 21, EndLine: 30, BodyExcerpt: "func BetaReader() {}"},
+		{ID: 4, FileID: 10, Name: "GammaSweeper", Kind: "function", QualifiedName: "pkg.GammaSweeper", StartLine: 31, EndLine: 40, BodyExcerpt: "func GammaSweeper() {}"},
+	}
+	edges := []store.Edge{
+		{Src: 1, Dst: 2, Kind: store.EdgeCalls, Weight: 1, CallLine: 3},
+		{Src: 1, Dst: 3, Kind: store.EdgeCalls, Weight: 1, CallLine: 4},
+		{Src: 1, Dst: 4, Kind: store.EdgeCalls, Weight: 1, CallLine: 5},
+	}
+	return &mockStore{
+		symbols:   symbols,
+		edges:     edges,
+		ids:       []int64{1, 2, 3, 4},
+		filePaths: map[int64]string{10: "pkg/hub.go"},
+		metaCache: symbols,
+	}
+}
+
+func calleeNamesFor(t *testing.T, r *Retriever, query, want string) []string {
+	t.Helper()
+	res, err := r.Retrieve(context.Background(), Request{
+		Query: query, BudgetTokens: 10000, SeedK: 4, MaxResults: 10,
+	})
+	require.NoError(t, err)
+	for _, s := range res.Symbols {
+		if s.QualifiedName != want {
+			continue
+		}
+		names := make([]string, 0, len(s.Callees))
+		for _, c := range s.Callees {
+			names = append(names, c.QualifiedName)
+		}
+		return names
+	}
+	t.Fatalf("%q not in results for query %q", want, query)
+	return nil
+}
+
+func TestRetriever_GraphRefsDoNotDependOnQueryHistory(t *testing.T) {
+	// enrichGraphContext ranks a symbol's callees against the query. The edge
+	// slices it ranks live in the process-wide graph memo, so sorting them in
+	// place leaves one query's ordering behind for the next one. A query whose
+	// tokens match no callee must see the same list whether or not some earlier
+	// query reordered the cache.
+	fresh := NewRetriever(graphContaminationFixture(), &mockEmbedder{}, slog.Default())
+	baseline := calleeNamesFor(t, fresh, "zz", "pkg.Hub")
+
+	used := NewRetriever(graphContaminationFixture(), &mockEmbedder{}, slog.Default())
+	calleeNamesFor(t, used, "gamma sweeper", "pkg.Hub")
+	after := calleeNamesFor(t, used, "zz", "pkg.Hub")
+
+	require.Equal(t, baseline, after,
+		"callee order leaked from the previous query through the shared graph memo")
+}
+
+func TestRetriever_ConcurrentRetrieveIsRaceFree(t *testing.T) {
+	// The shipped MCP server dispatches tool calls on a worker pool, so two
+	// Retrieve calls run against one Retriever at the same time. Run with -race.
+	r := NewRetriever(graphContaminationFixture(), &mockEmbedder{}, slog.Default())
+	queries := []string{"alpha writer", "beta reader", "gamma sweeper", "hub"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(q string) {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				_, err := r.Retrieve(context.Background(), Request{
+					Query: q, BudgetTokens: 10000, SeedK: 4, MaxResults: 10,
+				})
+				if err != nil {
+					t.Errorf("retrieve %q: %v", q, err)
+					return
+				}
+			}
+		}(queries[i%len(queries)])
+	}
+	wg.Wait()
 }

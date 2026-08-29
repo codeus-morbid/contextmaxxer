@@ -739,9 +739,17 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 	// is measurable with cmd/chainprobe; escalate to the cross-encoder only if
 	// it proves insufficient.
 	qTokens := tokenizeForOverlap(req.Query)
-	rankRefs := func(edges []store.Edge, target func(store.Edge) int64) {
-		if len(qTokens) == 0 {
-			return
+	// DECISION(2026-08): rankRefs RETURNS a sorted copy and never sorts in
+	// place. Its input is memo.callerEdges/calleeEdges, which the graph memo
+	// keeps for the life of the index generation — sorting it in place left one
+	// query's ordering behind for the next (a query matching no callee saw the
+	// previous caller's order instead of source order), and the shipped MCP
+	// server dispatches tool calls on a worker pool, so two queries could sort
+	// the same backing array at once. The copy is len(edges) of a struct of two
+	// ints; the memo exists to avoid rebuilding maps, not to avoid this.
+	rankRefs := func(edges []store.Edge, target func(store.Edge) int64) []store.Edge {
+		if len(qTokens) == 0 || len(edges) == 0 {
+			return edges
 		}
 		score := make(map[int64]float32, len(edges))
 		for _, e := range edges {
@@ -757,9 +765,12 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 			// siblings whose file path repeated the query words.
 			score[id] = overlapRatio(qTokens, sym.QualifiedName)
 		}
-		sort.SliceStable(edges, func(i, j int) bool {
-			return score[target(edges[i])] > score[target(edges[j])]
+		ranked := make([]store.Edge, len(edges))
+		copy(ranked, edges)
+		sort.SliceStable(ranked, func(i, j int) bool {
+			return score[target(ranked[i])] > score[target(ranked[j])]
 		})
+		return ranked
 	}
 
 	// DECISION(2026-08): call edges are path-insensitive, so every graph ref is
@@ -811,7 +822,7 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 			callerEdges = callerEdgesByID[ownerSym.ID]
 		}
 		scored[i].CallersTotal = len(callerEdges)
-		rankRefs(callerEdges, func(e store.Edge) int64 { return e.Src })
+		callerEdges = rankRefs(callerEdges, func(e store.Edge) int64 { return e.Src })
 		if len(callerEdges) > maxCallerRefs {
 			callerEdges = callerEdges[:maxCallerRefs]
 		}
@@ -831,7 +842,7 @@ func enrichGraphContext(ctx context.Context, r *Retriever, req Request, scored [
 			calleeEdges = calleeEdgesByID[ownerSym.ID]
 		}
 		scored[i].CalleesTotal = len(calleeEdges)
-		rankRefs(calleeEdges, func(e store.Edge) int64 { return e.Dst })
+		calleeEdges = rankRefs(calleeEdges, func(e store.Edge) int64 { return e.Dst })
 		// DECISION(2026-08): the callee list is scaled by rank, the way evidence
 		// windows already are. A flat wide list bought chain hops (postgres 0.82
 		// -> 1.00 at 40) but pushed graph refs from 35% to 56% of the response
