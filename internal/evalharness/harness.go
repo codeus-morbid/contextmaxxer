@@ -72,8 +72,11 @@ type Server struct {
 }
 
 // Start spawns the server and completes the MCP initialize handshake.
-func Start(bin, indexPath string) (*Server, error) {
-	cmd := exec.Command(bin, "mcp", "--index", indexPath)
+func Start(bin, indexPath string, extraArgs ...string) (*Server, error) {
+	// extraArgs exists so a probe can vary ONE served knob (say, the reranker)
+	// without forking the harness; with none passed the server takes the release
+	// defaults, which is what a host gets.
+	cmd := exec.Command(bin, append([]string{"mcp", "--index", indexPath}, extraArgs...)...)
 	cmd.Stderr = nil // server logs are noise here
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
