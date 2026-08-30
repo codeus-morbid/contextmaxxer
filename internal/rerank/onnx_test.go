@@ -61,3 +61,31 @@ func TestCandidateTextUsesStructuredFieldsBeforeBody(t *testing.T) {
 	require.Contains(t, got, "body:\nfunc (r *OnnxReranker) scoreBatch")
 	require.Less(t, strings.Index(got, "signature:"), strings.Index(got, "body:"))
 }
+
+func TestEveryDownloadedRerankerIsPinned(t *testing.T) {
+	// A spec with a URL and no hash is refused at download time now, so an
+	// unpinned reranker is a dead option rather than an insecure one. Two of
+	// these three were unpinned and would have broken silently.
+	for _, name := range []string{
+		JinaRerankerV2BaseMultilingual,
+		JinaRerankerV1TinyEN,
+		MxbaiRerankXsmallV1,
+	} {
+		spec, err := specForModel(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if spec.modelURL == "" {
+			continue // locally produced, never downloaded
+		}
+		if spec.modelSHA256 == "" {
+			t.Errorf("%s: model is downloaded but has no pinned sha256", name)
+		}
+		if spec.tokSHA256 == "" {
+			t.Errorf("%s: tokenizer is downloaded but has no pinned sha256", name)
+		}
+		if strings.Contains(spec.modelURL, "/resolve/main/") {
+			t.Errorf("%s: model URL points at a mutable branch: %s", name, spec.modelURL)
+		}
+	}
+}

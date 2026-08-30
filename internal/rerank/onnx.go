@@ -32,16 +32,21 @@ const (
 	defaultRerankerMaxQueryTokens     = 256
 	defaultRerankerBatchSize          = 8
 	defaultRerankerBodyChars          = 1600
-	jinaRerankerV2BaseMultilingualURL = "https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual/resolve/main/onnx/model_int8.onnx"
-	jinaRerankerV2TokenizerURL        = "https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual/resolve/main/tokenizer.json"
-	// Revision-pinned + hash-verified (see embed.ModelSpec SHA fields); the
-	// default reranker must not trust a mutable /main/ URL.
+	jinaRerankerV2BaseMultilingualURL = "https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual/resolve/9cfeff2df7d40d1b78e75e5e9cebec92a99813c9/onnx/model_int8.onnx"
+	jinaRerankerV2TokenizerURL        = "https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual/resolve/9cfeff2df7d40d1b78e75e5e9cebec92a99813c9/tokenizer.json"
+	jinaRerankerV2SHA256              = "c5220cf8fe023f8aa0ed2a3eb787d4451a7f17cf53f6b787e35718dd4b8815c3"
+	jinaRerankerV2TokSHA256           = "3a56def25aa40facc030ea8b0b87f3688e4b3c39eb8b45d5702b3a1300fe2a20"
+	// Every reranker above and below is revision-pinned and hash-verified (the
+	// hashes reach embed.ModelSpec, which refuses an unpinned download). Two of
+	// the three used to point at a mutable /main/ URL with no checksum.
 	jinaRerankerV1TinyENURL          = "https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/resolve/aca45de6945b5dc6399abcd2a9c55ded5dc9111f/onnx/model.onnx"
 	jinaRerankerV1TinyENTokenizerURL = "https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/resolve/aca45de6945b5dc6399abcd2a9c55ded5dc9111f/tokenizer.json"
 	jinaRerankerV1TinyENSHA256       = "e0e743251c7566e2b1e4f5ad091c681a700d7d7a3d85541ea56ca3acf43d1afa"
 	jinaRerankerV1TinyENTokSHA256    = "0046da43cc8c424b317f56b092b0512aaaa65c4f925d2f16af9d9eeb4d0ef902"
-	mxbaiRerankXsmallV1URL           = "https://huggingface.co/mixedbread-ai/mxbai-rerank-xsmall-v1/resolve/main/onnx/model.onnx"
-	mxbaiRerankXsmallV1TokenizerURL  = "https://huggingface.co/mixedbread-ai/mxbai-rerank-xsmall-v1/resolve/main/tokenizer.json"
+	mxbaiRerankXsmallV1URL           = "https://huggingface.co/mixedbread-ai/mxbai-rerank-xsmall-v1/resolve/b5c6e9da73abc3711f593f705371cdbe9e0fe422/onnx/model.onnx"
+	mxbaiRerankXsmallV1TokenizerURL  = "https://huggingface.co/mixedbread-ai/mxbai-rerank-xsmall-v1/resolve/b5c6e9da73abc3711f593f705371cdbe9e0fe422/tokenizer.json"
+	mxbaiRerankXsmallV1SHA256        = "536b7183f8964dd212c4e2f4029fcc595cfc03ac233aba03d293546aaa5a875b"
+	mxbaiRerankXsmallV1TokSHA256     = "305674b4d785287feecfb5f73f24aa75e9b57c87c579cfe24fbd207987d4b4c4"
 )
 
 type Config struct {
@@ -97,6 +102,8 @@ func specForModel(name string) (modelSpec, error) {
 		return modelSpec{
 			modelURL:     jinaRerankerV2BaseMultilingualURL,
 			tokenizerURL: jinaRerankerV2TokenizerURL,
+			modelSHA256:  jinaRerankerV2SHA256,
+			tokSHA256:    jinaRerankerV2TokSHA256,
 			useBERTPair:  false,
 		}, nil
 	case JinaRerankerV1TinyEN:
@@ -121,6 +128,8 @@ func specForModel(name string) (modelSpec, error) {
 		return modelSpec{
 			modelURL:     mxbaiRerankXsmallV1URL,
 			tokenizerURL: mxbaiRerankXsmallV1TokenizerURL,
+			modelSHA256:  mxbaiRerankXsmallV1SHA256,
+			tokSHA256:    mxbaiRerankXsmallV1TokSHA256,
 			useBERTPair:  true,
 		}, nil
 	default:
