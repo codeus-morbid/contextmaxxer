@@ -237,10 +237,26 @@ func (s *Store) GetFileByPath(ctx context.Context, path string) (*store.File, er
 	return f, nil
 }
 
+// DECISION(2026-08): the five deletes below run in ONE transaction. They used
+// to be five independent statements, the only multi-table mutation in this
+// package that was not atomic, and the failure mode is not hypothetical: this
+// machine lost power mid-afternoon during a watch reindex, and afterwards
+// bm25(symbol_body_fts) returned NULL for the repository being indexed —
+// every query against it answered "tool error" until the scan was made
+// defensive. A half-applied delete leaves the FTS indexes disagreeing with
+// their content tables, which SQLite documents as undefined behaviour.
+// ASSUMES: a rollback is always preferable to a partial delete — a file that
+// is still indexed is stale, a file that is half-deleted is corrupt.
 func (s *Store) DeleteFile(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete file begin: %w", err)
+	}
+	defer tx.Rollback()
+
 	// symbol_vec is a vec0 virtual table: FK cascade on symbols does not reach
 	// it, so orphaned vectors must be removed explicitly.
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM symbol_vec WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?)`, id); err != nil {
 		return fmt.Errorf("delete file vectors: %w", err)
 	}
@@ -249,23 +265,25 @@ func (s *Store) DeleteFile(ctx context.Context, id int64) error {
 	// row to remove its terms. Deleting the file first leaves both indexes
 	// matching symbols that no longer exist, which then vanish at the JOIN
 	// while still consuming the result limit.
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM symbol_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id=?)`, id); err != nil {
 		return fmt.Errorf("delete file fts: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM symbol_body_fts WHERE rowid IN (SELECT symbol_id FROM symbol_bodies WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, id); err != nil {
 		return fmt.Errorf("delete file body fts: %w", err)
 	}
 	// symbol_chunks cascades, but its vec0 table does not — same reason
 	// symbol_vec is cleared by hand above.
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM symbol_chunk_vec WHERE chunk_id IN (SELECT id FROM symbol_chunks WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id=?))`, id); err != nil {
 		return fmt.Errorf("delete file chunk vectors: %w", err)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE id=?`, id)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id=?`, id); err != nil {
 		return fmt.Errorf("delete file: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete file commit: %w", err)
 	}
 	s.invalidateVecCache()
 	return nil

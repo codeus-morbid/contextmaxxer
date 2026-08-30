@@ -850,3 +850,55 @@ func TestSearchByBodyText_SurvivesDetachedFTSRows(t *testing.T) {
 	hits, err = s.SearchByBodyText(ctx, "dispatchExecution", 5)
 	require.NoError(t, err, "a content/index disagreement must not fail the query")
 }
+
+func TestDeleteFile_IsAtomic(t *testing.T) {
+	// DeleteFile clears five tables. When those were five independent
+	// statements, anything that stopped it in the middle — a cancelled
+	// context, a killed process, a power cut — left the tables disagreeing with
+	// each other, which for the external-content FTS indexes SQLite calls
+	// undefined and which showed up in practice as bm25() returning NULL and
+	// every query against that index failing. Here the fourth statement is made
+	// to fail; the first must not survive it.
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	fileID, err := s.SaveFile(ctx, &store.File{Path: "a.go", Language: "go", Hash: "h", Mtime: 1})
+	require.NoError(t, err)
+	ids, err := s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fileID, Name: "Run", Kind: "function", QualifiedName: "app.Run",
+		StartLine: 1, EndLine: 9, FullBody: "func Run() { dispatchExecution() }",
+	}})
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	// symbol_vec is what the FIRST statement clears, and it is a table in its
+	// own right — so it still shows a half-applied delete even while the file
+	// row survives. Counting symbol_fts does NOT work here and the first
+	// version of this test was wrong for that reason: an external-content FTS5
+	// table counts through its content table, so the number only moves once the
+	// cascade removes the symbols, which is the last statement of the five.
+	vec := make([]float32, 384)
+	vec[0] = 1
+	require.NoError(t, s.UpsertEmbeddingBatch(ctx, []store.Embedding{{SymbolID: ids[0], Vector: vec}}))
+
+	countVec := func() int {
+		var n int
+		require.NoError(t, s.db.QueryRowContext(ctx, `SELECT count(*) FROM symbol_vec`).Scan(&n))
+		return n
+	}
+	require.Positive(t, countVec(), "fixture must have a vector before it is deleted")
+
+	// Break the fourth statement's target so the delete cannot run to the end.
+	_, err = s.db.ExecContext(ctx, `DROP TABLE symbol_chunk_vec`)
+	require.NoError(t, err)
+
+	require.Error(t, s.DeleteFile(ctx, fileID), "the delete must report the failure")
+
+	require.Positive(t, countVec(),
+		"symbol_vec was cleared by the first statement of the same delete; if it "+
+			"is empty the transaction did not roll back and the index is now "+
+			"missing vectors for symbols that still exist")
+
+	_, err = s.GetFileByPath(ctx, "a.go")
+	require.NoError(t, err, "a failed delete must leave the file in place, not half-removed")
+}
