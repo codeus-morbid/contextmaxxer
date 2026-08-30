@@ -160,130 +160,12 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	stats.EmbedDuration = time.Since(t0)
 
 	tSeed := time.Now()
-	var vSeeds []store.ScoredSymbol
-	if qvec != nil {
-		vSeeds, err = r.store.SearchByVectorScored(ctx, qvec, req.SeedK)
-		if err != nil {
-			return Result{}, fmt.Errorf("seed search: %w", err)
-		}
+	sr, err := seedCandidates(ctx, r, req, qvec)
+	if err != nil {
+		return Result{}, err
 	}
-
-	type seedOrigin struct {
-		score float32
-		fromV bool
-		fromF bool
-	}
-
-	var seeds []int64
-	vectorScores := make(map[int64]float32)
-	originMap := make(map[int64]*seedOrigin)
-
-	if req.Mode == ModeVectorOnly {
-		seeds = make([]int64, 0, len(vSeeds))
-		for _, s := range vSeeds {
-			seeds = append(seeds, s.ID)
-			vectorScores[s.ID] = s.Score
-			originMap[s.ID] = &seedOrigin{score: s.Score, fromV: true}
-		}
-	} else {
-		fSeeds, err := r.store.SearchByText(ctx, req.Query, req.SeedK)
-		if err != nil {
-			return Result{}, fmt.Errorf("fts seed search: %w", err)
-		}
-
-		rrfScores := make(map[int64]float32)
-		for rank, s := range vSeeds {
-			rrfScores[s.ID] += 1.0 / float32(rrfK+rank+1)
-			if _, ok := originMap[s.ID]; !ok {
-				originMap[s.ID] = &seedOrigin{}
-			}
-			originMap[s.ID].fromV = true
-			vectorScores[s.ID] = s.Score
-		}
-		// DECISION(2026-06): FTS gets a reduced vote in RRF. Equal-weight fusion
-		// systematically demoted correct vector candidates on paraphrastic
-		// queries (gen-corpus fb_g_encrypt_key: vector rank 3 -> hybrid rank 14;
-		// ctx_g_alpha_balance: 13 -> out of pool). FTS still boosts identifier
-		// matches, but cannot outvote strong semantic evidence alone.
-		// REVISIT IF: lexical/identifier slices regress on the gen corpus.
-		ftsW := DefaultFTSWeight
-		for rank, s := range fSeeds {
-			rrfScores[s.ID] += ftsW / float32(rrfK+rank+1)
-			if _, ok := originMap[s.ID]; !ok {
-				originMap[s.ID] = &seedOrigin{}
-			}
-			originMap[s.ID].fromF = true
-		}
-		// DECISION(2026-08): the lossless bodies are a third channel with their
-		// own ranking. The head index stops at body_excerpt, so a term living
-		// past the cap is unreachable through it — the only way such code gets
-		// seeded at all. Weighted below head FTS because a long body matches
-		// common tokens easily. REVISIT IF: lexical slices regress on the gate.
-		bSeeds, err := r.store.SearchByBodyText(ctx, req.Query, req.SeedK)
-		if err != nil {
-			return Result{}, fmt.Errorf("body fts seed search: %w", err)
-		}
-		bodyW := DefaultBodyFTSWeight
-		for rank, s := range bSeeds {
-			rrfScores[s.ID] += bodyW / float32(rrfK+rank+1)
-			if _, ok := originMap[s.ID]; !ok {
-				originMap[s.ID] = &seedOrigin{}
-			}
-			originMap[s.ID].fromF = true
-		}
-		// DECISION(2026-08): chunk vectors are the semantic counterpart of the
-		// body FTS channel. The per-symbol vector is built from the capped
-		// excerpt, so a paraphrase of code living past the cap matches nothing
-		// lexically and nothing semantically either; body FTS answers only the
-		// first half of that. Chunks exist for capped symbols alone.
-		if qvec != nil && DefaultChunkVecWeight > 0 {
-			cSeeds, err := r.store.SearchByChunkVector(ctx, qvec, req.SeedK)
-			if err != nil {
-				return Result{}, fmt.Errorf("chunk vector seed search: %w", err)
-			}
-			chunkW := DefaultChunkVecWeight
-			for rank, s := range cSeeds {
-				rrfScores[s.ID] += chunkW / float32(rrfK+rank+1)
-				if _, ok := originMap[s.ID]; !ok {
-					originMap[s.ID] = &seedOrigin{}
-				}
-				originMap[s.ID].fromV = true
-			}
-		}
-
-		type rrfEntry struct {
-			id    int64
-			score float32
-		}
-		all := make([]rrfEntry, 0, len(rrfScores))
-		for id, sc := range rrfScores {
-			all = append(all, rrfEntry{id, sc})
-		}
-		// Tie-break on ID. These slices are built by ranging a map, so equal
-		// scores would otherwise be ordered by Go's randomized map iteration and
-		// an unstable sort — the same query returning different results on two
-		// runs of the same binary, and every before/after comparison carrying an
-		// unmeasured noise floor. RRF ties are common: two symbols each seeded by
-		// one channel at the same rank score identically.
-		sort.Slice(all, func(i, j int) bool {
-			if all[i].score != all[j].score {
-				return all[i].score > all[j].score
-			}
-			return all[i].id < all[j].id
-		})
-
-		limit := req.SeedK
-		if limit > len(all) {
-			limit = len(all)
-		}
-		seeds = make([]int64, limit)
-		for i := 0; i < limit; i++ {
-			id := all[i].id
-			seeds[i] = id
-			vectorScores[id] = rrfScores[id]
-			originMap[id].score = rrfScores[id]
-		}
-	}
+	vSeeds, seeds := sr.vSeeds, sr.seeds
+	vectorScores, originMap := sr.vectorScores, sr.originMap
 	stats.SeedDuration = time.Since(tSeed)
 	stats.SeedCount = len(seeds)
 
@@ -544,60 +426,7 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		})
 	}
 
-	if !req.SkipRerank && r.reranker != nil && len(scored) > 1 && !shouldSkipRerank(req, scored) {
-		// DECISION(2026-06): lazy mode inverts the default — the cross-encoder
-		// (~1s, 83% of total latency after the vector cache) runs only when the
-		// fused ranking is ambiguous. Confident fused rankings are served as-is.
-		if req.LazyRerank && !rankingAmbiguous(scored) {
-			stats.RerankLazySkipped = true
-		} else {
-			t3 := time.Now()
-			reranked, err := r.reranker.Rerank(ctx, req.Query, scored)
-			if err != nil {
-				// A reranker failure (seen live: transient DML 80004005 on
-				// GPU) must degrade to the fused ranking, not kill the whole
-				// query — the fusion order is already a good answer.
-				r.log.Warn("rerank failed; serving fused ranking", "err", err)
-			} else {
-				scored = reranked
-			}
-			stats.RerankDuration = time.Since(t3)
-		}
-	}
-	applyIntent := func() {
-		if r.ranker == nil || len(scored) <= 1 {
-			return
-		}
-		if req.SkipIntent {
-			if _, ok := r.ranker.(IntentRanker); ok {
-				return
-			}
-		}
-		tRank := time.Now()
-		scored = r.ranker.Rank(req.Query, scored)
-		if _, ok := r.ranker.(IntentRanker); ok {
-			stats.IntentDuration += time.Since(tRank)
-		}
-	}
-	applyIntent()
-
-	// DECISION(2026-06): escalation — when the primary (fast) ranking looks
-	// ambiguous, rerun the candidate pool through a stronger reranker. On the
-	// gen corpus jina-v2 beats tiny by +0.08 Hit@1 but costs ~5.7s p95; paying
-	// that only on low-confidence queries keeps the common path fast.
-	// REVISIT IF: escalation rate exceeds ~40% of queries or quality matches tiny.
-	if r.escalator != nil && !req.SkipRerank && len(scored) > 1 && rankingAmbiguous(scored) {
-		tEsc := time.Now()
-		esc, escErr := r.escalator.Rerank(ctx, req.Query, scored)
-		if escErr != nil {
-			r.log.Warn("escalation rerank failed", "err", escErr)
-		} else {
-			scored = esc
-			stats.Escalated = true
-			applyIntent()
-		}
-		stats.EscalateDuration = time.Since(tEsc)
-	}
+	scored = rerankAndRank(ctx, r, req, scored, &stats)
 
 	if len(scored) > req.MaxResults {
 		scored = scored[:req.MaxResults]
