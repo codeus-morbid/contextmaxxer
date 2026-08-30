@@ -159,15 +159,20 @@ Paired agents answered the same questions on pinned public repositories.
 |---|---:|---:|---:|---:|
 | Prometheus, grep | 5/5 | 51 | 4 | 142 s |
 | Prometheus, Contextmaxxer | 5/5 | **8** | **0** | **47 s** |
-| CockroachDB, grep | 6/6 | 59 | 17 | 561 s |
-| CockroachDB, Contextmaxxer | 6/6 | **12** | **0** | **267 s** |
+| CockroachDB, grep | 6/6 | 34 | 9 | 96 s |
+| CockroachDB, Contextmaxxer | 6/6 | **7** | **0** | **45 s** |
 
-The robust result is fewer tool calls, fewer source reads and lower latency.
+Both rows are the runs written up in [BENCHMARK.md](BENCHMARK.md) — Prometheus
+from the paired-sonnet comparison, CockroachDB from the v0.1.0-beta.5
+replication on six paraphrastic questions. Each is a single run; the same
+measurement repeated on one arm has come back 57% apart, so the ratios are
+indicative and the zero source reads are the durable part.
+
 Raw token savings are situational because the agent's own base context can
 dominate total usage.
 
-[BENCHMARK.md](BENCHMARK.md) contains the pinned Prometheus reproduction,
-questions, limitations and negative results.
+[BENCHMARK.md](BENCHMARK.md) has the questions, the protocol, the limitations
+and the negative results.
 
 ### Retrieval quality
 
