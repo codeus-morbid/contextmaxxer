@@ -29,8 +29,9 @@ type ModelSpec struct {
 	// DECISION(2026-07): URLs point at immutable HF revision commits and the
 	// hash is verified after download — /main/ URLs plus a merely-logged
 	// checksum meant a silent upstream change (or truncated download) would
-	// be trusted. Empty = unpinned (legacy specs without a known-good local
-	// copy to hash).
+	// be trusted. Empty is now REFUSED at download time unless the operator sets
+	// CONTEXTMAXXER_ALLOW_UNVERIFIED_DOWNLOAD; the locally-trained ft specs carry
+	// no URLs at all and never reach that path.
 	ModelSHA256     string
 	TokenizerSHA256 string
 	InputNames      []string
@@ -48,12 +49,17 @@ type ModelSpec struct {
 }
 
 var bgeSmallEnV15 = ModelSpec{
-	Name:         "bge-small-en-v1.5",
-	Dim:          384,
-	MaxTokens:    512,
-	ModelURL:     "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx",
-	TokenizerURL: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
-	InputNames:   []string{"input_ids", "attention_mask", "token_type_ids"},
+	Name:      "bge-small-en-v1.5",
+	Dim:       384,
+	MaxTokens: 512,
+	// Pinned to an immutable revision and hash-verified, like the default model.
+	// It used to point at /resolve/main/ with no checksum, so whatever the
+	// branch happened to hold on the day of the download was trusted.
+	ModelURL:        "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx",
+	TokenizerURL:    "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json",
+	ModelSHA256:     "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+	TokenizerSHA256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+	InputNames:      []string{"input_ids", "attention_mask", "token_type_ids"},
 }
 
 // DECISION: jina-v2-base-code supports 8192 tokens via ALiBi, but we cap batch processing
@@ -185,6 +191,9 @@ type onnxCompanionDownload struct {
 	url     string
 	zipPath string
 	outName string
+	// sha256 of the archive as served. Empty means this artifact is not pinned
+	// and the download is refused unless the operator opts out explicitly.
+	sha256 string
 }
 
 type onnxRuntimePlatform struct {
@@ -198,6 +207,8 @@ type onnxRuntimePlatform struct {
 	// must be extracted next to the main library.
 	extraLibs  []string
 	companions []onnxCompanionDownload
+	// sha256 of the archive as served, see onnxCompanionDownload.sha256.
+	sha256 string
 }
 
 func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
@@ -209,6 +220,7 @@ func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
 				url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-linux-x64-gpu-%s.tgz", ver, ver),
 				libName:  "libonnxruntime.so." + ver,
 				platform: "linux-x64-gpu",
+				sha256:   "630d1c292a8e530425bc4047598ce30acece2c4b5b5f4f46b676212302c38d93",
 				extraLibs: []string{
 					"libonnxruntime_providers_shared.so",
 					"libonnxruntime_providers_cuda.so",
@@ -222,6 +234,7 @@ func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
 				url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-win-x64-gpu-%s.zip", ver, ver),
 				libName:  "onnxruntime.dll",
 				platform: "win-x64-gpu",
+				sha256:   "125c9fe408f41b9ae1ad7138dac5ebb19a85e65438d1e368d21b50e6abb32f4e",
 				extraLibs: []string{
 					"onnxruntime_providers_shared.dll",
 					"onnxruntime_providers_cuda.dll",
@@ -237,25 +250,32 @@ func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
 			url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-linux-x64-%s.tgz", ver, ver),
 			libName:  "libonnxruntime.so." + ver,
 			platform: "linux-x64",
+			sha256:   "e0a8998e70416801f9a634a8ea1d369a255ff109741469f9d99cf369a46a1492",
 		}, nil
 	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
 		return onnxRuntimePlatform{
 			url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-linux-aarch64-%s.tgz", ver, ver),
 			libName:  "libonnxruntime.so." + ver,
 			platform: "linux-aarch64",
+			sha256:   "849c04634e76446bbe0a92f67955a9641415c37f11930804066057bf9eadbd03",
 		}, nil
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
 		return onnxRuntimePlatform{
 			url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-osx-arm64-%s.tgz", ver, ver),
 			libName:  "libonnxruntime." + ver + ".dylib",
 			platform: "osx-arm64",
+			sha256:   "65405dc8793c86cadb98b5e07f6d3bdde84f8300f1b030d4736b41c17610d6c1",
 		}, nil
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
-		return onnxRuntimePlatform{
-			url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-osx-x86_64-%s.tgz", ver, ver),
-			libName:  "libonnxruntime." + ver + ".dylib",
-			platform: "osx-x86_64",
-		}, nil
+		// DECISION(2026-08): Intel macOS is not supported. This branch used to
+		// build an onnxruntime-osx-x86_64-<ver>.tgz URL that upstream does not
+		// publish — release v1.25.0 ships exactly one darwin asset, osx-arm64 —
+		// so the first run on an Intel Mac ended in a 404 from inside the
+		// download path. Failing here says so. REVISIT IF: a pinned ORT release
+		// starts shipping an x86_64 darwin build again.
+		return onnxRuntimePlatform{}, fmt.Errorf(
+			"unsupported platform: darwin/amd64 — ONNX Runtime %s publishes no x86_64 macOS build (arm64 only)",
+			ver)
 	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
 		if OrtProvider() == "directml" {
 			// DECISION(2026-06): the DML-enabled onnxruntime.dll ships only via
@@ -272,10 +292,12 @@ func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
 				zipPath:  "runtimes/win-x64/native/onnxruntime.dll",
 				libName:  "onnxruntime.dll",
 				platform: "win-x64-directml-" + directMLOrtVersion,
+				sha256:   "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681",
 				companions: []onnxCompanionDownload{{
 					url:     "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/" + directMLVersion + "/microsoft.ai.directml." + directMLVersion + ".nupkg",
 					zipPath: "bin/x64-win/DirectML.dll",
 					outName: "DirectML.dll",
+					sha256:  "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9",
 				}},
 			}, nil
 		}
@@ -283,6 +305,7 @@ func onnxRuntimePlatformInfo() (onnxRuntimePlatform, error) {
 			url:      fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-win-x64-%s.zip", ver, ver),
 			libName:  "onnxruntime.dll",
 			platform: "win-x64",
+			sha256:   "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738",
 		}, nil
 	default:
 		return onnxRuntimePlatform{}, fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -325,7 +348,7 @@ func ensureONNXRuntime(cacheDir string, log *slog.Logger) (string, error) {
 			}
 			compArchive := filepath.Join(dir, "companion.archive")
 			log.Info("downloading ONNX Runtime companion", "url", comp.url)
-			if err := downloadFileWithProgress(comp.url, compArchive, "", log); err != nil {
+			if err := downloadFileWithProgress(comp.url, compArchive, comp.sha256, log); err != nil {
 				return "", fmt.Errorf("download companion %s: %w", comp.outName, err)
 			}
 			err := extractFromZipPath(compArchive, dir, comp.zipPath, comp.outName)
@@ -340,7 +363,7 @@ func ensureONNXRuntime(cacheDir string, log *slog.Logger) (string, error) {
 	log.Info("downloading ONNX Runtime", "version", onnxRuntimeVersion, "platform", info.platform, "url", info.url)
 
 	archivePath := filepath.Join(dir, "onnxruntime.archive")
-	if err := downloadFileWithProgress(info.url, archivePath, "", log); err != nil {
+	if err := downloadFileWithProgress(info.url, archivePath, info.sha256, log); err != nil {
 		return "", fmt.Errorf("download onnxruntime: %w", err)
 	}
 	defer os.Remove(archivePath)
@@ -368,7 +391,7 @@ func ensureONNXRuntime(cacheDir string, log *slog.Logger) (string, error) {
 	for _, comp := range info.companions {
 		compArchive := filepath.Join(dir, "companion.archive")
 		log.Info("downloading ONNX Runtime companion", "url", comp.url)
-		if err := downloadFileWithProgress(comp.url, compArchive, "", log); err != nil {
+		if err := downloadFileWithProgress(comp.url, compArchive, comp.sha256, log); err != nil {
 			return "", fmt.Errorf("download companion %s: %w", comp.outName, err)
 		}
 		err := extractFromZipPath(compArchive, dir, comp.zipPath, comp.outName)
@@ -417,7 +440,31 @@ func ensureModelFiles(cacheDir string, spec ModelSpec, log *slog.Logger) (modelP
 	return modelPath, tokenizerPath, nil
 }
 
+// unverifiedDownloadEnv lets someone on a platform this build does not pin yet
+// proceed anyway. It exists so "we have no hash for your arch" is a decision the
+// operator makes out loud, not a default.
+const unverifiedDownloadEnv = "CONTEXTMAXXER_ALLOW_UNVERIFIED_DOWNLOAD"
+
+// DECISION(2026-08): a missing checksum is an ERROR, not permission to skip the
+// check. It used to mean "skip", and every ONNX Runtime, DirectML and CUDA
+// provider archive was fetched with an empty one — so the model weights, which
+// are data, were verified while the native libraries, which get loaded into this
+// process and executed, were not. Nothing in the code said so; the empty string
+// simply read as "pinning unnecessary" instead of "pinning missing".
+// ASSUMES: every platform this binary can run on has a pinned hash below.
+// REVISIT IF: a new platform or runtime version is added — the build must fail
+// loudly until its hash is filled in, which is the point.
 func downloadFileWithProgress(url, dest, expectedSHA256 string, log *slog.Logger) error {
+	if expectedSHA256 == "" {
+		if os.Getenv(unverifiedDownloadEnv) == "" {
+			return fmt.Errorf("refusing to download %s: no pinned sha256 for this artifact. "+
+				"Set %s=1 to accept an unverified download, or add the hash to the platform table",
+				url, unverifiedDownloadEnv)
+		}
+		log.Warn("downloading WITHOUT integrity verification — this file is executed, not just read",
+			"url", url, "override", unverifiedDownloadEnv)
+	}
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("http get %s: %w", url, err)

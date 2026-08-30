@@ -73,8 +73,16 @@ confirm that the local index and models are working.
 ## Network and data boundary
 
 Source files, indexes and queries stay on the machine during normal operation.
-Network access is used to download pinned models and ONNX Runtime. Optional LLM
-enrichment contacts only the endpoint explicitly supplied by the user.
+Network access is used to download the model weights and the ONNX Runtime, both
+from URLs pinned in the source. Every one of those downloads is checked against
+a SHA256 recorded in the binary, and a mismatch aborts the install rather than
+warning: the runtime archives are native libraries this process loads and
+executes, so an unverified one is arbitrary code. An artifact with no recorded
+hash is refused for the same reason; `CONTEXTMAXXER_ALLOW_UNVERIFIED_DOWNLOAD=1`
+overrides that if you are bringing up a platform this build does not pin yet.
+
+Optional LLM enrichment contacts only the endpoint explicitly supplied by the
+user.
 
 Feedback logging can be disabled with `--feedback-log none`. Before sharing a
 log, create a redacted export:
