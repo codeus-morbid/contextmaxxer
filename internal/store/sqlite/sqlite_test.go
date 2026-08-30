@@ -812,3 +812,41 @@ func TestStore_DeletePathsClearChunkVectors(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchByBodyText_SurvivesDetachedFTSRows(t *testing.T) {
+	// symbol_body_fts is an external-content FTS5 table over symbol_bodies, and
+	// SQLite calls the result undefined once the two disagree. Observed on a
+	// real index after a power cut during a watch reindex: bm25() returned NULL,
+	// the scan into float64 failed, and every query against that repo answered
+	// "tool error" — while its vector and head-FTS channels were intact and
+	// would have answered.
+	//
+	// That exact NULL depends on the damaged b-tree state and does not reproduce
+	// here; detaching a content row is the reproducible half of the same
+	// disagreement. What this pins is the rule the fix introduced: a row the
+	// body channel cannot score must not take the query down with it.
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	fileID, err := s.SaveFile(ctx, &store.File{Path: "a.go", Language: "go", Hash: "h", Mtime: 1})
+	require.NoError(t, err)
+	ids, err := s.SaveSymbolBatch(ctx, []store.Symbol{{
+		FileID: fileID, Name: "Run", Kind: "function", QualifiedName: "app.Run",
+		StartLine: 1, EndLine: 9,
+		FullBody: "func Run() { dispatchExecution(subcommandMode) }",
+	}})
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	hits, err := s.SearchByBodyText(ctx, "dispatchExecution", 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "fixture must match before it is broken")
+
+	// Detach the content row while leaving the FTS entry behind — exactly what
+	// an interrupted DeleteFile leaves on disk.
+	_, err = s.db.ExecContext(ctx, `DELETE FROM symbol_bodies WHERE symbol_id = ?`, ids[0])
+	require.NoError(t, err)
+
+	hits, err = s.SearchByBodyText(ctx, "dispatchExecution", 5)
+	require.NoError(t, err, "a content/index disagreement must not fail the query")
+}

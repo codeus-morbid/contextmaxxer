@@ -950,13 +950,26 @@ func (s *Store) ftsSearch(ctx context.Context, sqlText, ftsQuery string, k int) 
 	for rows.Next() {
 		var ss store.ScoredSymbol
 		var ftsRowID int64
-		var bm25val float64
+		// DECISION(2026-08): bm25 is scanned as nullable. On an external-content
+		// FTS5 table it returns NULL when the index disagrees with the content
+		// table, and scanning that into a float64 fails the whole query — the
+		// served tool answered "tool error" instead of degrading. Seen for real:
+		// a power cut during an incremental reindex left symbol_body_fts in that
+		// state, and every query against the repo died on the body channel while
+		// the vector and head-FTS channels were intact and would have answered.
+		// A row we cannot score is dropped; the other channels still vote.
+		// REVISIT IF: NULLs appear on a healthy index, which would mean the
+		// cause is in the query rather than the index.
+		var bm25val sql.NullFloat64
 		if err := rows.Scan(&ftsRowID, &bm25val,
 			&ss.ID, &ss.FileID, &ss.Name, &ss.Kind, &ss.QualifiedName,
 			&ss.StartLine, &ss.EndLine, &ss.Signature, &ss.Docstring, &ss.BodyExcerpt); err != nil {
 			return nil, fmt.Errorf("search by text scan: %w", err)
 		}
-		ss.Score = float32(-bm25val)
+		if !bm25val.Valid {
+			continue
+		}
+		ss.Score = float32(-bm25val.Float64)
 		result = append(result, ss)
 	}
 	return result, rows.Err()
