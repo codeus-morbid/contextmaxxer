@@ -1,17 +1,36 @@
 # Contextmaxxer
 
+[![CI](https://github.com/codeus-morbid/contextmaxxer/actions/workflows/ci.yml/badge.svg)](https://github.com/codeus-morbid/contextmaxxer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
+[![Status: beta](https://img.shields.io/badge/status-preparing%20first%20beta-orange.svg)](#project-status)
+
 > Local code-graph search for coding agents.
 
-Contextmaxxer gives Claude Code, Cursor and Codex one MCP tool for finding the
+Contextmaxxer gives Claude Code, Cursor and Codex an MCP tool for finding the
 small set of symbols that answers a question — with source lines, callers,
 callees and exact call sites already attached.
 
-On CockroachDB's 90K symbols, it answered 6/6 architecture questions with
+On CockroachDB's 90K symbols it answered 6/6 architecture questions with
 **4.9× fewer discovery calls, zero source-file reads and 2.1× lower latency**
-than grep-driven exploration.
+than grep-driven exploration. That is one paired run: repeats of this
+measurement vary by up to 57%, so read it as an order of magnitude and not a
+coefficient — [BENCHMARK.md](BENCHMARK.md) says exactly how much a single run is
+worth. Zero source reads is the part that reproduces every time.
 
 Everything needed for indexing and search runs locally. Your repository is not
 uploaded to a search service.
+
+## When to reach for it, and when not to
+
+Use it on a **large codebase you do not already know**, especially when
+following a call chain ("what actually runs when X happens") or when you cannot
+name the thing you are looking for and have to describe it.
+
+Use `grep` instead on a small or familiar repository, or when you already know
+the symbol's name. A text search is hard to beat when the name is the query;
+this tool earns its keep when the haystack is large and the question is about
+behaviour rather than spelling.
 
 ## See the difference
 
@@ -25,16 +44,29 @@ one response:
     1. retrieve.Pack
        internal/retrieve/packer.go:19-47
 
+        19 | func Pack(symbols []ScoredResult, budgetTokens int, fullBodyCount int) ([]ScoredResult, int) {
+           |     ...
+        27 |     var selected []ScoredResult
+        28 |     total := 0
+        29 |     for i, s := range symbols {
+        30 |         if fullBodyCount >= 0 && i >= fullBodyCount {
+        31 |             s.Body = compactBody(s)
+        32 |             s.Detail = "compact"
+
        Called by:
        - retrieve.runPipeline
 
        Calls:
-       - retrieve.compactBody
-       - retrieve.estimateTokens
+       - retrieve.compactBody                    packer.go:31
+       - retrieve.estimateTokens                 packer.go:36
 
-The result body is line-numbered, so the agent can cite and reason from it
-without reopening the file. This example is a checked-in public self-eval case,
-not a prompt written after seeing the ranking.
+Two things matter in that block. The body arrives **line-numbered**, so the
+agent can cite `packer.go:31` without reopening the file. And every neighbour
+comes with the line where the call happens — following the chain into
+`compactBody` costs no second search, whatever the size of the repository.
+
+This example is a checked-in public self-eval case, not a prompt written after
+seeing the ranking.
 
 ![Contextmaxxer terminal search result](docs/assets/contextmaxxer-demo.svg)
 
@@ -47,35 +79,38 @@ not a prompt written after seeing the ranking.
 - **Agent-ready evidence.** Results are packed to a token budget and include the
   relationships needed to follow a code path.
 - **Local-first.** Indexes, embeddings and feedback logs stay on your machine.
-- **Polyglot.** Twelve languages are supported, all with symbol and call edges.
+- **Polyglot.** Thirteen languages, all with symbols and call edges; Go, Python
+  and TypeScript resolve calls by declared type.
 
-The advantage grows with repository size. On small projects a strong model with
-grep is already inexpensive; Contextmaxxer is designed for large codebases
-where discovery fan-out becomes the bottleneck.
+Contextmaxxer is designed for large codebases, where discovery fan-out becomes
+the bottleneck. On small projects a strong model with grep is already cheap.
 
 ## Quick start
 
-Prebuilt binaries are planned for Windows amd64 and Linux amd64.
+**There is no published release yet** — build from source for now. It takes one
+command more than a download, and [Build from source](#build-from-source) has
+the toolchain list. Prebuilt Windows amd64 and Linux amd64 archives are the
+first thing on the [roadmap](ROADMAP.md).
 
-1. Download the archive for your platform from the
-   [latest release](https://github.com/codeus-morbid/contextmaxxer/releases/latest)
-   and verify it against checksums.txt.
-2. Put the binary on PATH.
+1. Build the binary:
+
+       task bootstrap && task build
+
+   Output lands in `.task/build`.
+2. Put it on PATH.
 3. Pre-download the models and ONNX Runtime:
 
        contextmaxxer warmup
 
-4. From the repository you want to search:
+4. From the repository you want to search, wire it into your agent:
 
-       contextmaxxer init --host codex .
-
-   Replace codex with claude-code or cursor when appropriate.
+       contextmaxxer init --host claude-code .    # or: cursor, codex
 
 5. Restart the agent and approve the contextmaxxer MCP server.
 
 For a large repository, start with the structural index:
 
-    contextmaxxer --fast init --host codex .
+    contextmaxxer --fast init --host claude-code .
 
 This makes symbol, lexical and graph retrieval available first. Run warmup when
 you are ready for semantic search and reranking.
@@ -136,22 +171,17 @@ questions, limitations and negative results.
 
 ### Retrieval quality
 
-An internal 144-case corpus across five real projects was used while developing
-the served configuration. Its 58-case reserved split measured:
-
-| Metric | Reserved split |
-|---|---:|
-| Hit@1 | 0.72 |
-| Hit@3 | **0.91** |
-| Recall@5 | 0.93 |
-| Recall@10 | 0.98 |
-
-The private-project cases are intentionally not published. A public self-eval
-containing 18 development and 12 reserved queries is included under
-internal/eval/testdata:
+Start with the part you can run yourself. A public self-eval — 18 development
+and 12 reserved queries over this repository — ships in `internal/eval/testdata`:
 
     go build -o .task/build/eval ./cmd/eval
     .task/build/eval --manifest internal/eval/testdata/manifest.public.json
+
+Behind that, an internal 144-case corpus across five real projects was used
+while developing the served configuration. Its 58-case reserved split measured
+Hit@1 0.72, **Hit@3 0.91**, Recall@5 0.93, Recall@10 0.98. Those cases come from
+private projects and are not published, so treat those numbers as our
+development record rather than as something you can check.
 
 ### Research result: small encoder, strong fusion
 
@@ -230,8 +260,9 @@ with a pinned Rust toolchain. Windows requires a MinGW-compatible gcc.
 ## Current limitations
 
 - The first warmup downloads several hundred megabytes of models and runtimes.
-- Windows amd64 and Linux amd64 are the initial release targets; macOS is not
-  packaged yet.
+- Windows amd64 and Linux amd64 are the initial release targets. macOS is not
+  packaged yet, and Intel macOS is unsupported outright — upstream ONNX Runtime
+  publishes no x86_64 darwin build for the pinned version.
 - CPU cross-encoder reranking is the dominant part of query latency.
 - Benefits are modest on small repositories.
 - Public reproduction currently covers the product's self-eval and the pinned
