@@ -315,6 +315,7 @@ func loadManifest(path, dataset string) ([]instance, error) {
 		if err := json.Unmarshal([]byte(line), &inst); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
+		inst.Query = decodeQuery(inst.Query)
 		if dataset != "" && inst.Dataset != dataset {
 			continue
 		}
@@ -322,4 +323,24 @@ func loadManifest(path, dataset string) ([]instance, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].InstanceID < out[j].InstanceID })
 	return out, sc.Err()
+}
+
+// decodeQuery unwraps a query that the dataset stored as a JSON string INSIDE a
+// JSON string. 103 of the 215 `pro` instances are shaped that way (and 2 of
+// verified): after one decode the text still begins and ends with a quote and
+// carries literal \n two characters wide. Searching that string means searching
+// the escapes as well as the words.
+//
+// The unwrap is conditional on the value round-tripping as a JSON string, so a
+// query that merely opens with a quotation mark is left alone.
+func decodeQuery(q string) string {
+	trimmed := strings.TrimSpace(q)
+	if len(trimmed) < 2 || trimmed[0] != '"' || trimmed[len(trimmed)-1] != '"' {
+		return q
+	}
+	var inner string
+	if err := json.Unmarshal([]byte(trimmed), &inner); err != nil {
+		return q
+	}
+	return inner
 }

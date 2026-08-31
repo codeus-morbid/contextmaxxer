@@ -166,3 +166,26 @@ func TestParseSpan(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeQuery(t *testing.T) {
+	// The pro shape: a JSON string stored inside the JSON string field, so the
+	// escapes survive one decode and reach the search verbatim.
+	got := decodeQuery(`"## Title:  \n\nList removal does not handle arrays"`)
+	want := "## Title:  \n\nList removal does not handle arrays"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+
+	// An ordinary query is untouched, including one that merely starts with a
+	// quotation mark.
+	for _, plain := range []string{
+		"merge(combine_attrs='override') does not copy attrs",
+		`"unterminated quote at the start`,
+		`"not json" and then some`,
+		"",
+	} {
+		if got := decodeQuery(plain); got != plain {
+			t.Fatalf("plain query changed: got %q want %q", got, plain)
+		}
+	}
+}
