@@ -213,6 +213,15 @@ func writeCursor(absRoot, cmdPath, dbPath string) ([]string, error) {
 	if changed {
 		touched = append(touched, rulePath)
 	}
+
+	hooksPath := filepath.Join(absRoot, ".cursor", "hooks.json")
+	changed, err = mergeCursorHooks(hooksPath, cmdPath)
+	if err != nil {
+		return nil, fmt.Errorf("cursor %s: %w", hooksPath, err)
+	}
+	if changed {
+		touched = append(touched, hooksPath)
+	}
 	return touched, nil
 }
 
@@ -244,6 +253,15 @@ func writeCodex(absRoot, cmdPath, dbPath string) ([]string, error) {
 	}
 	if changed {
 		touched = append(touched, agentsPath)
+	}
+
+	hooksPath := filepath.Join(absRoot, ".codex", "hooks.json")
+	changed, err = mergeCodexHooks(hooksPath, cmdPath)
+	if err != nil {
+		return nil, fmt.Errorf("codex %s: %w", hooksPath, err)
+	}
+	if changed {
+		touched = append(touched, hooksPath)
 	}
 	return touched, nil
 }
@@ -415,4 +433,83 @@ func jsonEqual(a, b any) bool {
 	ab, err1 := json.Marshal(a)
 	bb, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(ab) == string(bb)
+}
+
+// searchCommandMatcher matches the shell search tools an agent reaches for.
+// Cursor matches it against the full command string, Codex against the tool
+// name, so it has to be loose enough for both and narrow enough not to fire on
+// unrelated commands.
+const searchCommandMatcher = "grep|rg|ag|ack"
+
+// mergeCursorHooks wires the search signal into .cursor/hooks.json.
+//
+// Shape per cursor.com/docs/hooks: {"version":1,"hooks":{"<event>":[{...}]}}.
+// beforeShellExecution is matched against the full command text, which is what
+// catches `rg foo` / `grep -n foo`.
+func mergeCursorHooks(path, cmdPath string) (bool, error) {
+	doc, err := loadJSONObject(path)
+	if err != nil {
+		return false, err
+	}
+	if _, ok := doc["version"]; !ok {
+		doc["version"] = 1
+	}
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	command := quoteIfSpaced(cmdPath) + " hook search-signal"
+	arr, _ := hooks["beforeShellExecution"].([]any)
+	for _, e := range arr {
+		if b, err := json.Marshal(e); err == nil && strings.Contains(string(b), "hook search-signal") {
+			return false, nil // already wired
+		}
+	}
+	hooks["beforeShellExecution"] = append(arr, map[string]any{
+		"command": command,
+		"matcher": searchCommandMatcher,
+	})
+	doc["hooks"] = hooks
+	return true, saveJSONObject(path, doc)
+}
+
+// mergeCodexHooks wires the search signal into <repo>/.codex/hooks.json.
+//
+// Codex ships Claude-style hooks, so the shape mirrors .claude/settings.json.
+// ASSUMES: that shape, inferred from "Claude-style" plus the documented
+// matcher/type/command fields — the JSON form was not verified against a live
+// Codex install. It is written project-local on purpose: a wrong guess in
+// <repo>/.codex is a file the user can delete, one in ~/.codex is not.
+// REVISIT IF: Codex rejects it — the failure mode is an ignored hook, not a
+// broken agent, because Codex fails open on hook errors.
+func mergeCodexHooks(path, cmdPath string) (bool, error) {
+	doc, err := loadJSONObject(path)
+	if err != nil {
+		return false, err
+	}
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	command := quoteIfSpaced(cmdPath) + " hook search-signal"
+	arr, _ := hooks["PreToolUse"].([]any)
+	for _, e := range arr {
+		if b, err := json.Marshal(e); err == nil && strings.Contains(string(b), "hook search-signal") {
+			return false, nil
+		}
+	}
+	hooks["PreToolUse"] = append(arr, map[string]any{
+		"matcher": "^Bash$",
+		"hooks":   []any{map[string]any{"type": "command", "command": command}},
+	})
+	doc["hooks"] = hooks
+	return true, saveJSONObject(path, doc)
+}
+
+// quoteIfSpaced quotes a binary path that a shell would otherwise split.
+func quoteIfSpaced(p string) string {
+	if strings.Contains(p, " ") {
+		return `"` + p + `"`
+	}
+	return p
 }

@@ -19,7 +19,8 @@ import (
 // tool call (no DB, no model, no app init).
 //
 //	contextmaxxer hook pre-search   # PreToolUse on Grep|Glob
-//	contextmaxxer hook post-find    # PostToolUse on find_context
+//	contextmaxxer hook post-find    # PostToolUse on find_context (Claude Code)
+//	contextmaxxer hook search-signal # a search on Cursor/Codex: record, never block
 //
 // The gate forces an agent to lead with find_context: the first Grep/Glob in a
 // session is blocked until find_context has been called once, after which
@@ -27,17 +28,25 @@ import (
 // It fails open — any misconfiguration or missing session id allows the call.
 func RunHook(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: contextmaxxer hook <pre-search|post-find>")
+		fmt.Fprintln(os.Stderr, "usage: contextmaxxer hook <pre-search|post-find|search-signal>")
 		return 0
 	}
 
 	var in struct {
-		SessionID string `json:"session_id"`
+		// Claude Code and Codex both send session_id; Cursor calls the same
+		// thing conversation_id. Reading both is the whole of what it takes to
+		// run on all three.
+		SessionID      string `json:"session_id"`
+		ConversationID string `json:"conversation_id"`
 	}
 	if data, err := io.ReadAll(os.Stdin); err == nil && len(data) > 0 {
 		_ = json.Unmarshal(data, &in)
 	}
-	marker := hookMarkerPath(in.SessionID)
+	sessionID := in.SessionID
+	if sessionID == "" {
+		sessionID = in.ConversationID
+	}
+	marker := hookMarkerPath(sessionID)
 
 	switch args[0] {
 	case "post-find":
@@ -63,6 +72,18 @@ func RunHook(args []string) int {
 		}
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
+	case "search-signal":
+		// DECISION(2026-08): records the observation and NEVER blocks. The gate
+		// needs to know find_context has answered, which on Claude Code comes
+		// from a PostToolUse matcher on the MCP tool name. Cursor and Codex can
+		// both intercept MCP calls, but their tool-name spelling is not
+		// something this was verified against — and a gate that cannot detect
+		// find_context never opens, so it would block grep permanently. Signal
+		// is safe to ship on an unverified host; blocking is not.
+		// REVISIT IF: the MCP matcher is confirmed on a real Cursor/Codex
+		// install — then these hosts can use pre-search like Claude Code.
+		recordSearchAfterContext()
+		return 0
 	default:
 		return 0
 	}

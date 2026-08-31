@@ -204,8 +204,9 @@ func TestWriteCursorFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(touched) != 2 {
-		t.Fatalf("want 2 touched files, got %v", touched)
+	// mcp.json, the rule, and hooks.json (the behavioural search signal).
+	if len(touched) != 3 {
+		t.Fatalf("want 3 touched files, got %v", touched)
 	}
 	rule, err := os.ReadFile(filepath.Join(dir, ".cursor", "rules", "contextmaxxer.mdc"))
 	if err != nil {
@@ -218,5 +219,71 @@ func TestWriteCursorFiles(t *testing.T) {
 	touched, err = writeCursor(dir, "ctxm", filepath.Join(dir, ".contextmaxxer", "index.db"))
 	if err != nil || len(touched) != 0 {
 		t.Fatalf("second run must touch nothing: %v err=%v", touched, err)
+	}
+}
+func mustContain(t *testing.T, path string, wants ...string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range wants {
+		if !strings.Contains(string(data), w) {
+			t.Fatalf("%s: missing %q in %s", path, w, string(data))
+		}
+	}
+}
+
+func TestMergeCursorHooksWiresTheSignalAndIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+
+	changed, err := mergeCursorHooks(path, "/bin/contextmaxxer")
+	if err != nil || !changed {
+		t.Fatalf("first merge: changed=%v err=%v", changed, err)
+	}
+	mustContain(t, path, "beforeShellExecution", "hook search-signal", searchCommandMatcher, `"version"`)
+
+	// Running init twice must not stack duplicate hooks.
+	changed, err = mergeCursorHooks(path, "/bin/contextmaxxer")
+	if err != nil || changed {
+		t.Fatalf("second merge should be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestMergeCursorHooksKeepsUnrelatedHooks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	seed := `{"version":1,"hooks":{"afterFileEdit":[{"command":"./fmt.sh"}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeCursorHooks(path, "/bin/contextmaxxer"); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, path, "./fmt.sh", "hook search-signal")
+}
+
+func TestMergeCodexHooksWiresTheSignalAndIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+
+	changed, err := mergeCodexHooks(path, "/bin/contextmaxxer")
+	if err != nil || !changed {
+		t.Fatalf("first merge: changed=%v err=%v", changed, err)
+	}
+	mustContain(t, path, "PreToolUse", "hook search-signal")
+
+	changed, err = mergeCodexHooks(path, "/bin/contextmaxxer")
+	if err != nil || changed {
+		t.Fatalf("second merge should be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestQuoteIfSpaced(t *testing.T) {
+	// A hook command runs through a shell; an unquoted "Program Files" path
+	// would split into two arguments and the hook would silently never run.
+	if got := quoteIfSpaced(`C:\Program Files\ctx.exe`); got != `"C:\Program Files\ctx.exe"` {
+		t.Fatalf("spaced path not quoted: %s", got)
+	}
+	if got := quoteIfSpaced("/bin/ctx"); got != "/bin/ctx" {
+		t.Fatalf("plain path should be untouched: %s", got)
 	}
 }
