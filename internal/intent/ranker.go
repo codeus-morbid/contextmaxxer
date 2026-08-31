@@ -63,11 +63,22 @@ func Weight() float32 {
 func (r *Ranker) Rank(query string, candidates []retrieve.ScoredResult) []retrieve.ScoredResult {
 	profile := Analyze(query)
 	out := append([]retrieve.ScoredResult(nil), candidates...)
-	// DECISION(2026-07): window 15, not 10 — the ranker runs on the full
-	// rerank pool (rerank_k=15) and a window of 10 made ranks 11-15
-	// unreachable no matter how strong the intent signal (seen live: a
-	// constructor at rank 11 for an explicit "construct X" query).
-	// REVISIT IF: releasecfg.RerankK changes.
+	// DECISION(2026-08): the window stays 15, and the list it returns is NOT
+	// guaranteed sorted past that point. Both facts are deliberate.
+	//
+	// The pool can exceed 15 even at the served max_results=5, because the
+	// protections append candidates past the limit (appendMissingTopVectorSeeds,
+	// appendMissingTopPPR). Scoring those too was tried: measured on the 20-repo
+	// gate it cost csharp-newtonsoft 0.03 Hit@1 and c-postgres 0.01, and gained
+	// nothing anywhere. The protected tail is there to survive INTO the pool,
+	// not to be re-ranked against the candidates that earned their place.
+	//
+	// The unsorted tail is real — the order breaks at the 14/15 boundary, a
+	// penalised candidate at 0.911 above an untouched 0.985 — and unreachable:
+	// runPipeline truncates to max_results (5) right after, and the confidence
+	// gap reads top-1 against top-2. Fixing what cannot surface is what the
+	// measurement above priced. REVISIT IF: a caller starts reading the pool
+	// beyond max_results, or releasecfg.RerankK changes.
 	window := 15
 	if window > len(out) {
 		window = len(out)

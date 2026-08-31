@@ -1,6 +1,8 @@
 package intent
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/retrieve"
@@ -244,4 +246,41 @@ func TestRankerDemotesSimulationTreesUnlessQueryAsks(t *testing.T) {
 	got = ranker.Rank("how does the asim simulation decide to split a range", items)
 	require.Equal(t, "queue.splitQueue.shouldSplit", got[0].QualifiedName,
 		"a query naming the simulation must still reach it")
+}
+
+func TestRankerScoresTheWindowAndLeavesTheTail(t *testing.T) {
+	// The pool can exceed the 15-item window because the pipeline appends
+	// protected candidates past the limit. Scoring those too was measured on the
+	// 20-repo gate and cost Hit without gaining anything, so the window stays
+	// at 15 and the tail comes back untouched and possibly out of order. This
+	// pins that as the intended contract rather than leaving it to be
+	// rediscovered as a bug: everything in the window is scored, nothing past it
+	// is, and runPipeline truncates to max_results long before the tail matters.
+	ranker := NewRanker()
+	items := make([]retrieve.ScoredResult, 30)
+	for i := range items {
+		items[i] = retrieve.ScoredResult{
+			QualifiedName: fmt.Sprintf("pkg.Type%d", i),
+			Kind:          "interface",
+			File:          "internal/pkg/a.go",
+			Score:         1.0 - float32(i)*0.001,
+		}
+	}
+
+	out := ranker.Rank("new database connection", items)
+	require.Len(t, out, 30)
+
+	scored := 0
+	for i := range out {
+		if strings.Contains(out[i].Why, "intent_rank") {
+			scored++
+		}
+	}
+	require.Equal(t, 15, scored,
+		"exactly the window is scored; scoring the protected tail was measured and rejected")
+
+	for i := 0; i+1 < 15; i++ {
+		require.GreaterOrEqual(t, out[i].Score, out[i+1].Score,
+			"the window itself must come back sorted (%d/%d)", i, i+1)
+	}
 }

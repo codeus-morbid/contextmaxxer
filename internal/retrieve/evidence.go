@@ -76,6 +76,14 @@ func applyEvidenceSpans(ctx context.Context, r *Retriever, query string, qvec []
 	for i := range results {
 		results[i].BodyStartLine = results[i].StartLine
 		results[i].BodyEndLine = results[i].EndLine
+		// DECISION(2026-08): the same guard the preserve-full-bodies path uses,
+		// applied here too. Both early exits below leave the body exactly as the
+		// packer produced it, and for a capped symbol that is the excerpt — so
+		// the degraded path (embedder down, "serving FTS-only seeds") used to
+		// report a 200-line range holding three lines, with a raw
+		// "// ... [truncated]" buried in the text and no structured signal that
+		// anything was missing.
+		markTruncatedAsExcerpt(&results[i])
 	}
 	if r.embedder == nil || len(qvec) == 0 {
 		return
@@ -358,15 +366,21 @@ func hydrateFullBodies(ctx context.Context, r *Retriever, results []ScoredResult
 		if full, err := r.store.GetSymbolBody(ctx, res.SymbolID); err == nil && full.Body != "" {
 			res.Body = full.Body
 		}
-		// Trust the text, not the call: a legacy index has no lossless body to
-		// give and can hand back the capped excerpt either as an error or as a
-		// successful read. Whichever it does, a body still carrying the marker
-		// is an excerpt, and saying otherwise is the exact lie this path had.
-		if strings.Contains(res.Body, truncationMarker) {
-			res.Detail = "excerpt"
-			res.BodyEndLine = res.StartLine + strings.Count(res.Body, "\n")
-		}
+		markTruncatedAsExcerpt(res)
 	}
+}
+
+// markTruncatedAsExcerpt trusts the text, not the call. A body still carrying
+// the truncation marker IS an excerpt however it got here — a legacy index with
+// no lossless body to give, or a path that never selected windows at all — and
+// a result that reports the symbol's full line range while holding twenty lines
+// of it tells the agent there is nothing more to fetch.
+func markTruncatedAsExcerpt(res *ScoredResult) {
+	if !strings.Contains(res.Body, truncationMarker) {
+		return
+	}
+	res.Detail = "excerpt"
+	res.BodyEndLine = res.StartLine + strings.Count(res.Body, "\n")
 }
 
 // truncationMarker is what the extractor appends when it caps a body.
