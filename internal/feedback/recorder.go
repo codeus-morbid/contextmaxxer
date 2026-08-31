@@ -109,6 +109,16 @@ func NewRecorder(path string) *Recorder {
 	}
 }
 
+// PendingPath is the single-entry breadcrumb holding the most recent
+// unlabelled retrieval. The in-memory ring cannot serve the discovery hook,
+// which runs as its own short-lived process and shares nothing with the
+// server; without a file on disk a behavioural signal would arrive with a
+// request id and no candidates, which is a label with nothing to label.
+//
+// It is one file, overwritten on every call and removed the moment the retrieval is
+// labelled — a snapshot of the last query, not a history of every query.
+func PendingPath(logPath string) string { return logPath + ".pending" }
+
 // holdRetrieval parks an unlabelled retrieval, evicting the oldest once the
 // ring is full. Eviction is silent on purpose: an unlabelled retrieval is
 // exactly what this change stopped writing.
@@ -122,6 +132,9 @@ func (r *Recorder) holdRetrieval(event RetrievalEvent) {
 	for len(r.order) > pendingRetrievals {
 		delete(r.pending, r.order[0])
 		r.order = r.order[1:]
+	}
+	if data, err := json.Marshal(event); err == nil {
+		_ = os.WriteFile(PendingPath(r.path), data, 0o644)
 	}
 }
 
@@ -141,6 +154,57 @@ func (r *Recorder) takeRetrieval(requestID string) (RetrievalEvent, bool) {
 		}
 	}
 	return event, true
+}
+
+// OutcomeSearchedAfterContext marks a retrieval the agent followed with a text
+// search of its own.
+//
+// DECISION(2026-08): the name describes what was OBSERVED, not what it means.
+// It is tempting to call this a rejection — the agent had the answer and went
+// looking anyway — but the same behaviour covers verifying a result, chasing a
+// literal string, and a question the tool was never meant to answer (its own
+// description tells agents to prefer grep on small or familiar repositories).
+// Whoever trains on this decides what it is worth; the recorder's job is to
+// stop losing the observation, not to grade it.
+const OutcomeSearchedAfterContext = "searched_after_context"
+
+// RecordObservedOutcome labels the last unlabelled retrieval from the outside,
+// for callers that cannot see the server's memory — the discovery hook is a
+// separate process, so the breadcrumb on disk is the only thing it can read.
+//
+// maxAge keeps an old breadcrumb from being blamed for something that happened
+// much later. Returns false when there was nothing recent to label, which is
+// the ordinary case and not an error.
+func RecordObservedOutcome(logPath, outcome string, maxAge time.Duration) (bool, error) {
+	data, err := os.ReadFile(PendingPath(logPath))
+	if err != nil {
+		return false, nil
+	}
+	var retrieval RetrievalEvent
+	if err := json.Unmarshal(data, &retrieval); err != nil || retrieval.RequestID == "" {
+		return false, nil
+	}
+	if maxAge > 0 && time.Since(retrieval.Time) > maxAge {
+		return false, nil
+	}
+	// Consume it either way: a breadcrumb that has been acted on must not be
+	// labelled twice by the next search in the same session.
+	_ = os.Remove(PendingPath(logPath))
+
+	r := NewRecorder(logPath)
+	if r == nil {
+		return false, nil
+	}
+	if err := r.append(retrieval); err != nil {
+		return false, err
+	}
+	return true, r.append(FeedbackEvent{
+		Event:     "feedback",
+		RequestID: retrieval.RequestID,
+		Time:      time.Now().UTC(),
+		Outcome:   outcome,
+		Source:    "hook",
+	})
 }
 
 // RotatedPath is where the previous generation lives. Readers that want the
@@ -200,6 +264,7 @@ func (r *Recorder) RecordFeedback(event FeedbackEvent) error {
 			return err
 		}
 	}
+	_ = os.Remove(PendingPath(r.path))
 	return r.append(event)
 }
 

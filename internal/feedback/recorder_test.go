@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -121,4 +122,62 @@ func TestRecorder_FeedbackAllRestoresTheFirehose(t *testing.T) {
 	require.NoError(t, r.RecordRetrieval(RetrievalEvent{RequestID: "a"}))
 	require.NoError(t, r.RecordRetrieval(RetrievalEvent{RequestID: "b"}))
 	require.Len(t, linesIn(t, path), 2, "debugging mode writes every served response")
+}
+
+func TestRecordObservedOutcome_LabelsTheLastRetrievalFromOutside(t *testing.T) {
+	// The hook is a separate short-lived process: it cannot see the server's
+	// in-memory ring, so the breadcrumb on disk is the only thing it can label.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "feedback.jsonl")
+	r := NewRecorder(path)
+	require.NoError(t, r.RecordRetrieval(RetrievalEvent{
+		RequestID:  "req-1",
+		Query:      "where is ranking computed",
+		Candidates: []Candidate{{Rank: 1, QualifiedName: "pkg.Fn", Features: map[string]float32{"ppr": 0.5}}},
+	}))
+	require.Empty(t, linesIn(t, path))
+
+	ok, err := RecordObservedOutcome(path, OutcomeSearchedAfterContext, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	lines := linesIn(t, path)
+	require.Len(t, lines, 2)
+	require.Contains(t, lines[0], `"event":"retrieval"`)
+	require.Contains(t, lines[0], `"ppr"`, "the observation is worthless without the candidates it judges")
+	require.Contains(t, lines[1], OutcomeSearchedAfterContext)
+	require.Contains(t, lines[1], `"source":"hook"`)
+
+	// A second search must not label the same retrieval again.
+	ok, err = RecordObservedOutcome(path, OutcomeSearchedAfterContext, time.Minute)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Len(t, linesIn(t, path), 2)
+}
+
+func TestRecordObservedOutcome_IgnoresAStaleBreadcrumb(t *testing.T) {
+	// A session can idle for hours; blaming a search on a retrieval from before
+	// lunch would manufacture signal rather than record it.
+	path := filepath.Join(t.TempDir(), "feedback.jsonl")
+	r := NewRecorder(path)
+	require.NoError(t, r.RecordRetrieval(RetrievalEvent{
+		RequestID: "old", Time: time.Now().Add(-time.Hour).UTC(),
+	}))
+
+	ok, err := RecordObservedOutcome(path, OutcomeSearchedAfterContext, 5*time.Minute)
+	require.NoError(t, err)
+	require.False(t, ok, "a retrieval older than the window must not be labelled")
+	require.Empty(t, linesIn(t, path))
+}
+
+func TestRecordFeedback_ClearsTheBreadcrumb(t *testing.T) {
+	// An explicit label consumes the retrieval, so a later search must not find
+	// a breadcrumb to label a second time.
+	path := filepath.Join(t.TempDir(), "feedback.jsonl")
+	r := NewRecorder(path)
+	require.NoError(t, r.RecordRetrieval(RetrievalEvent{RequestID: "req-1"}))
+	require.NoError(t, r.RecordFeedback(FeedbackEvent{RequestID: "req-1", Outcome: "used"}))
+
+	_, err := os.Stat(PendingPath(path))
+	require.True(t, os.IsNotExist(err), "a labelled retrieval must leave no breadcrumb behind")
 }

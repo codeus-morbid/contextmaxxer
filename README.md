@@ -240,9 +240,13 @@ See [BETA.md](BETA.md) for the current enrichment workflow.
 ## Privacy
 
 - Source code and indexes remain local during indexing and retrieval.
-- A retrieval reaches the log only once the agent labels it with
-  `record_feedback`. Unlabelled queries are held in memory and discarded, so
-  ordinary searching leaves nothing on disk.
+- A retrieval reaches the log only once something labels it — the agent calling
+  `record_feedback`, or the discovery hook observing that it reached for grep
+  straight afterwards. Unlabelled queries are discarded.
+- Between a query and its label, the most recent request waits in a single
+  `feedback.jsonl.pending` file, overwritten on every call and removed as soon
+  as it is labelled or discarded. That file is what lets the hook, which runs
+  as its own process, attribute what it sees.
 - What a labelled entry contains: the query, file paths, symbol names and
   ranking features — never complete source bodies.
 - The log is capped at 64 MB and keeps one previous generation

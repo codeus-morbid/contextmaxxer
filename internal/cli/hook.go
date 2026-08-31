@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/codeus-morbid/contextmaxxer/internal/feedback"
 )
 
 // RunHook implements the "discovery gate" used as a Claude Code hook. It returns
@@ -47,7 +50,16 @@ func RunHook(args []string) int {
 			return 0 // can't track the session — never block
 		}
 		if _, err := os.Stat(marker); err == nil {
-			return 0 // gate already opened by a find_context call
+			// The gate is open, so find_context has already answered in this
+			// session and the agent is searching anyway. That is the one signal
+			// nobody has to volunteer: record_feedback asks the agent to grade
+			// its own result after it already has what it wanted, and across
+			// 95958 served responses it was called 57 times. Reaching for grep
+			// is not a verdict — it also covers verifying an answer and hunting
+			// a literal string — but it is an observation, and observations are
+			// what the log was missing.
+			recordSearchAfterContext()
+			return 0
 		}
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
@@ -76,4 +88,25 @@ func hookMarkerPath(sessionID string) string {
 	}
 	sum := sha256.Sum256([]byte(sessionID))
 	return filepath.Join(os.TempDir(), "contextmaxxer-discovery-"+hex.EncodeToString(sum[:8]))
+}
+
+// searchAfterContextWindow bounds how stale a retrieval may be and still be
+// blamed for a search. A session can sit idle for hours between the answer and
+// the next command; attributing a search to a retrieval from before lunch would
+// manufacture signal rather than record it.
+const searchAfterContextWindow = 5 * time.Minute
+
+// recordSearchAfterContext is best-effort by construction. The hook runs on
+// every gated tool call and must stay fast and fail open — a logging problem
+// must never delay or block the agent's search, so every error here is dropped
+// on purpose.
+func recordSearchAfterContext() {
+	path := os.Getenv("CONTEXTMAXXER_FEEDBACK_LOG")
+	if path == "" {
+		path = filepath.Join(".contextmaxxer", "feedback.jsonl")
+	}
+	if path == "none" {
+		return
+	}
+	_, _ = feedback.RecordObservedOutcome(path, feedback.OutcomeSearchedAfterContext, searchAfterContextWindow)
 }
