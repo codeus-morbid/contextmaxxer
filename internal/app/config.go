@@ -13,6 +13,10 @@ type Config struct {
 	IncludeTests bool
 	ModelName    string
 	ForceReindex bool
+	// IndexPathSet records whether -index was given on the command line, so a
+	// subcommand that declares its own -index can take the global one as its
+	// default without overriding a default with a default.
+	IndexPathSet bool
 }
 
 // ConfigFromFlags returns a *Config so that flag.Parse() (called by the caller

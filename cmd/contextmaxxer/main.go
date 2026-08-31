@@ -29,6 +29,15 @@ func run() int {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	// Only an explicitly given -index is forwarded to a subcommand that owns a
+	// flag of the same name; forwarding the default would override the
+	// subcommand's own default with an identical one for no reason.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "index" {
+			cfg.IndexPathSet = true
+		}
+	})
+
 	if *showVersion {
 		fmt.Printf("contextmaxxer %s (commit=%s, built=%s)\n", version, commit, buildTime)
 		return 0
