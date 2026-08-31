@@ -201,110 +201,11 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	alpha := effectiveAlpha(req, vSeeds)
 	stats.EffectiveAlpha = alpha
 
-	var maxSeed float32
-	for _, sc := range seedScores {
-		if sc > maxSeed {
-			maxSeed = sc
-		}
-	}
-	var maxPPR float32
-	for _, sc := range ranks {
-		if sc > maxPPR {
-			maxPPR = sc
-		}
-	}
-	var maxDegree int
-	for _, out := range g.OutEdges {
-		if len(out) > maxDegree {
-			maxDegree = len(out)
-		}
-	}
-	seedRank := make(map[int64]int, len(seeds))
-	for i, id := range seeds {
-		seedRank[id] = i + 1
-	}
-	type pprEntry struct {
-		id    int64
-		score float32
-	}
-	pprEntries := make([]pprEntry, 0, len(ranks))
-	for id, sc := range ranks {
-		pprEntries = append(pprEntries, pprEntry{id: id, score: sc})
-	}
-	sort.Slice(pprEntries, func(i, j int) bool {
-		if pprEntries[i].score != pprEntries[j].score {
-			return pprEntries[i].score > pprEntries[j].score
-		}
-		return pprEntries[i].id < pprEntries[j].id
-	})
-	pprRank := make(map[int64]int, len(pprEntries))
-	for i, entry := range pprEntries {
-		pprRank[entry.id] = i + 1
-	}
-
-	type ranked struct {
-		id    int64
-		score float32
-	}
-	allRanked := make([]ranked, 0, len(ranks))
-	fusedScores := make(map[int64]float32, len(ranks))
-	for id, pprSc := range ranks {
-		var normSeed float32
-		if maxSeed > 0 {
-			if sc, isSeed := seedScores[id]; isSeed {
-				normSeed = sc / maxSeed
-			}
-		}
-		var normPPR float32
-		if maxPPR > 0 {
-			normPPR = pprSc / maxPPR
-		}
-		fused := alpha*normSeed + (1-alpha)*normPPR
-		fusedScores[id] = fused
-		allRanked = append(allRanked, ranked{id, fused})
-	}
-	sort.Slice(allRanked, func(i, j int) bool {
-		if allRanked[i].score != allRanked[j].score {
-			return allRanked[i].score > allRanked[j].score
-		}
-		return allRanked[i].id < allRanked[j].id
-	})
-
-	limit := req.MaxResults
-	if r.reranker != nil && req.RerankK > limit {
-		limit = req.RerankK
-	}
-	if limit > len(allRanked) {
-		limit = len(allRanked)
-	}
-	topIDs := make([]int64, limit)
-	for i := 0; i < limit; i++ {
-		topIDs[i] = allRanked[i].id
-	}
 	qTokens := tokenizeForOverlap(req.Query)
-	if !req.AlphaSet {
-		if r.reranker != nil {
-			topIDs = appendMissingTopVectorSeeds(topIDs, vSeeds, limit, qTokens)
-		} else {
-			topIDs = protectTopVectorSeeds(topIDs, vSeeds, 1)
-		}
-	}
-
-	// DECISION: Re-protect top-PPR-ranked candidates (Bug B fix). FTS in hybrid
-	// mode crowds out PPR-only graph candidates with low seed score; this ensures
-	// strong PPR candidates always reach the reranker pool.
-	const protectPPRCount = 5
-	pprIDsByRank := make([]int64, 0, len(pprEntries))
-	for _, e := range pprEntries {
-		pprIDsByRank = append(pprIDsByRank, e.id)
-	}
-	topIDs = appendMissingTopPPR(topIDs, pprIDsByRank, protectPPRCount)
-
-	topScores := make(map[int64]float32, len(topIDs))
-	for _, id := range topIDs {
-		topScores[id] = fusedScores[id]
-	}
-
+	fused := fuseSeedAndPPR(r, req, g, seeds, seedScores, ranks, vSeeds, alpha, qTokens)
+	topIDs, topScores := fused.topIDs, fused.topScores
+	seedRank, pprRank := fused.seedRank, fused.pprRank
+	maxDegree, maxPPR := fused.maxDegree, fused.maxPPR
 	syms, err := r.store.GetSymbolsByIDs(ctx, topIDs)
 	if err != nil {
 		return Result{}, fmt.Errorf("hydrate symbols: %w", err)
