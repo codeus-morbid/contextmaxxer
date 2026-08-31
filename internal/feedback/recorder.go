@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -43,16 +44,59 @@ type FeedbackEvent struct {
 	Source          string    `json:"source,omitempty"`
 }
 
+// DECISION(2026-08): the log rotates at a size cap instead of growing forever.
+// Every find_context call appends a retrieval event carrying up to thirty
+// candidates with their full feature vectors — about 5.6KB each, measured — and
+// nothing ever removed one. Two and a half months of dogfooding produced a
+// 538MB file, seventy times the size of the index it describes, holding every
+// query string and symbol path since the beginning. Disk is the smaller half of
+// that: it is also a growing record of what someone searched for.
+//
+// One previous generation is kept, so the cap bounds the pair at 2x. Rotation
+// loses the oldest events by design; feedback is training signal, not an audit
+// trail, and the alternative on a shared machine is a file nobody notices until
+// it is gigabytes.
+// ASSUMES: recent events are the useful ones. REVISIT IF: a training run needs
+// more history than one generation holds — raise the cap rather than removing it.
+const (
+	defaultMaxLogBytes = 64 << 20
+	rotatedSuffix      = ".1"
+)
+
 type Recorder struct {
-	path string
-	mu   sync.Mutex
+	path     string
+	maxBytes int64
+	mu       sync.Mutex
 }
 
 func NewRecorder(path string) *Recorder {
 	if path == "" {
 		return nil
 	}
-	return &Recorder{path: path}
+	max := int64(defaultMaxLogBytes)
+	if v := os.Getenv("CONTEXTMAXXER_FEEDBACK_MAX_MB"); v != "" {
+		if mb, err := strconv.ParseInt(v, 10, 64); err == nil && mb > 0 {
+			max = mb << 20
+		}
+	}
+	return &Recorder{path: path, maxBytes: max}
+}
+
+// RotatedPath is where the previous generation lives. Readers that want the
+// whole retained history must read it before the current file.
+func RotatedPath(path string) string { return path + rotatedSuffix }
+
+// rotateIfLarge must be called with the lock held.
+func (r *Recorder) rotateIfLarge() {
+	info, err := os.Stat(r.path)
+	if err != nil || info.Size() < r.maxBytes {
+		return
+	}
+	// A failed rotation must not stop recording: the log is a convenience, and
+	// refusing to serve a query because its log could not be renamed would be a
+	// worse trade than a file that overshoots the cap.
+	_ = os.Remove(RotatedPath(r.path))
+	_ = os.Rename(r.path, RotatedPath(r.path))
 }
 
 func NewRequestID() string {
@@ -94,6 +138,7 @@ func (r *Recorder) append(event any) error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0755); err != nil {
 		return fmt.Errorf("create feedback dir: %w", err)
 	}
+	r.rotateIfLarge()
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("open feedback log: %w", err)

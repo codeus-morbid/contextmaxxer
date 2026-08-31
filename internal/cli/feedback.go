@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -58,11 +59,20 @@ func runFeedbackExport(_ context.Context, args []string, log *slog.Logger) error
 		return fmt.Errorf("resolve path: %w", err)
 	}
 	inPath := filepath.Join(absRoot, ".contextmaxxer", "feedback.jsonl")
-	in, err := os.Open(inPath)
-	if err != nil {
-		return fmt.Errorf("open feedback log (%s): %w", inPath, err)
+	// The log rotates at a size cap, so the retained history is the previous
+	// generation followed by the current one. Reading only the current file
+	// would silently export a fraction of what is on disk.
+	inPaths := []string{feedback.RotatedPath(inPath), inPath}
+	present := inPaths[:0]
+	for _, p := range inPaths {
+		if _, err := os.Stat(p); err == nil {
+			present = append(present, p)
+		}
 	}
-	defer in.Close()
+	inPaths = present
+	if len(inPaths) == 0 {
+		return fmt.Errorf("open feedback log (%s): no such file", inPath)
+	}
 
 	dest := *outPath
 	if dest == "" {
@@ -97,64 +107,79 @@ func runFeedbackExport(_ context.Context, args []string, log *slog.Logger) error
 		}
 	}
 
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // large lines: candidate arrays can be big
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var peek struct {
-			Event string `json:"event"`
-		}
-		if err := json.Unmarshal([]byte(line), &peek); err != nil {
-			skipped++
-			continue
-		}
-		switch peek.Event {
-		case "retrieval":
-			var ev feedback.RetrievalEvent
-			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+	scanFeedbackFile := func(in io.Reader) error {
+		sc := bufio.NewScanner(in)
+		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // large lines: candidate arrays can be big
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			var peek struct {
+				Event string `json:"event"`
+			}
+			if err := json.Unmarshal([]byte(line), &peek); err != nil {
 				skipped++
 				continue
 			}
-			track(ev.Time)
-			retrievals++
-			for _, c := range ev.Candidates {
-				if len(c.Features) > 0 {
-					withFeatures++
-					break
+			switch peek.Event {
+			case "retrieval":
+				var ev feedback.RetrievalEvent
+				if err := json.Unmarshal([]byte(line), &ev); err != nil {
+					skipped++
+					continue
 				}
-			}
-			if *redact {
-				redactRetrieval(&ev)
-			}
-			if err := writeJSONL(w, ev); err != nil {
-				return err
-			}
-		case "feedback":
-			var ev feedback.FeedbackEvent
-			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				track(ev.Time)
+				retrievals++
+				for _, c := range ev.Candidates {
+					if len(c.Features) > 0 {
+						withFeatures++
+						break
+					}
+				}
+				if *redact {
+					redactRetrieval(&ev)
+				}
+				if err := writeJSONL(w, ev); err != nil {
+					return err
+				}
+			case "feedback":
+				var ev feedback.FeedbackEvent
+				if err := json.Unmarshal([]byte(line), &ev); err != nil {
+					skipped++
+					continue
+				}
+				track(ev.Time)
+				feedbacks++
+				if len(ev.SelectedSymbols) > 0 || len(ev.RejectedSymbols) > 0 || ev.Outcome != "" {
+					withLabels++
+				}
+				if *redact {
+					redactFeedback(&ev)
+				}
+				if err := writeJSONL(w, ev); err != nil {
+					return err
+				}
+			default:
 				skipped++
-				continue
 			}
-			track(ev.Time)
-			feedbacks++
-			if len(ev.SelectedSymbols) > 0 || len(ev.RejectedSymbols) > 0 || ev.Outcome != "" {
-				withLabels++
-			}
-			if *redact {
-				redactFeedback(&ev)
-			}
-			if err := writeJSONL(w, ev); err != nil {
-				return err
-			}
-		default:
-			skipped++
 		}
+		if err := sc.Err(); err != nil {
+			return fmt.Errorf("read feedback log: %w", err)
+		}
+		return nil
 	}
-	if err := sc.Err(); err != nil {
-		return fmt.Errorf("read feedback log: %w", err)
+
+	for _, p := range inPaths {
+		in, err := os.Open(p)
+		if err != nil {
+			return fmt.Errorf("open feedback log (%s): %w", p, err)
+		}
+		err = scanFeedbackFile(in)
+		in.Close()
+		if err != nil {
+			return err
+		}
 	}
 
 	span := "n/a"
