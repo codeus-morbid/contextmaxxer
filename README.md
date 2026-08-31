@@ -240,12 +240,15 @@ See [BETA.md](BETA.md) for the current enrichment workflow.
 ## Privacy
 
 - Source code and indexes remain local during indexing and retrieval.
-- Feedback logging records queries, paths, symbol names and ranking features,
-  but not complete source bodies.
-- The log is capped at 64 MB and keeps one previous generation, so it cannot
-  grow into an unbounded record of everything ever searched for. Raise or lower
-  it with **CONTEXTMAXXER_FEEDBACK_MAX_MB**.
-- Disable feedback with **--feedback-log none**.
+- A retrieval reaches the log only once the agent labels it with
+  `record_feedback`. Unlabelled queries are held in memory and discarded, so
+  ordinary searching leaves nothing on disk.
+- What a labelled entry contains: the query, file paths, symbol names and
+  ranking features — never complete source bodies.
+- The log is capped at 64 MB and keeps one previous generation
+  (**CONTEXTMAXXER_FEEDBACK_MAX_MB**). **CONTEXTMAXXER_FEEDBACK_ALL=1** logs
+  every response instead, for debugging ranking.
+- Disable feedback entirely with **--feedback-log none**.
 - A redacted export hashes queries, paths and names before sharing.
 - Optional cloud enrichment sends code excerpts only when you explicitly
   configure an external endpoint.

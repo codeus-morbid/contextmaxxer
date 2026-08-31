@@ -63,10 +63,32 @@ const (
 	rotatedSuffix      = ".1"
 )
 
+// DECISION(2026-08): a retrieval event reaches disk only once a label arrives
+// for it. Writing every one produced 95958 retrieval events against 57 labels
+// on this machine — 0.06% — because record_feedback is a call the agent makes
+// voluntarily and mostly does not. That is 538MB of inputs with no outputs:
+// enough to see what was served, never enough to learn what should have been,
+// which is the only thing the log exists to support.
+//
+// So retrievals wait in a small ring keyed by request id, and RecordFeedback
+// flushes the matching one just before the label. A request that never gets a
+// label is never written; a label whose retrieval has aged out is still
+// written, without its features, because the label itself is the scarce part.
+// CONTEXTMAXXER_FEEDBACK_ALL=1 restores the old firehose for anyone debugging
+// ranking, where seeing every served response is the point.
+// ASSUMES: a label follows its retrieval within pendingRetrievals requests.
+// REVISIT IF: labels start arriving from somewhere other than the same session.
+const pendingRetrievals = 256
+
 type Recorder struct {
 	path     string
 	maxBytes int64
+	logAll   bool
 	mu       sync.Mutex
+	// pending holds retrieval events that have not been labelled yet, oldest
+	// first in order; both are guarded by mu.
+	pending map[string]RetrievalEvent
+	order   []string
 }
 
 func NewRecorder(path string) *Recorder {
@@ -79,7 +101,46 @@ func NewRecorder(path string) *Recorder {
 			max = mb << 20
 		}
 	}
-	return &Recorder{path: path, maxBytes: max}
+	return &Recorder{
+		path:     path,
+		maxBytes: max,
+		logAll:   os.Getenv("CONTEXTMAXXER_FEEDBACK_ALL") == "1",
+		pending:  make(map[string]RetrievalEvent, pendingRetrievals),
+	}
+}
+
+// holdRetrieval parks an unlabelled retrieval, evicting the oldest once the
+// ring is full. Eviction is silent on purpose: an unlabelled retrieval is
+// exactly what this change stopped writing.
+func (r *Recorder) holdRetrieval(event RetrievalEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.pending[event.RequestID]; !exists {
+		r.order = append(r.order, event.RequestID)
+	}
+	r.pending[event.RequestID] = event
+	for len(r.order) > pendingRetrievals {
+		delete(r.pending, r.order[0])
+		r.order = r.order[1:]
+	}
+}
+
+// takeRetrieval removes and returns the held retrieval for a request id.
+func (r *Recorder) takeRetrieval(requestID string) (RetrievalEvent, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.pending[requestID]
+	if !ok {
+		return RetrievalEvent{}, false
+	}
+	delete(r.pending, requestID)
+	for i, id := range r.order {
+		if id == requestID {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+	return event, true
 }
 
 // RotatedPath is where the previous generation lives. Readers that want the
@@ -114,7 +175,11 @@ func (r *Recorder) RecordRetrieval(event RetrievalEvent) error {
 	if event.RequestID == "" {
 		event.RequestID = NewRequestID()
 	}
-	return r.append(event)
+	if r.logAll {
+		return r.append(event)
+	}
+	r.holdRetrieval(event)
+	return nil
 }
 
 func (r *Recorder) RecordFeedback(event FeedbackEvent) error {
@@ -127,6 +192,13 @@ func (r *Recorder) RecordFeedback(event FeedbackEvent) error {
 	}
 	if event.RequestID == "" {
 		return fmt.Errorf("feedback request_id is required")
+	}
+	// The retrieval goes first so a reader meets the candidates before the
+	// label that judges them.
+	if retrieval, ok := r.takeRetrieval(event.RequestID); ok {
+		if err := r.append(retrieval); err != nil {
+			return err
+		}
 	}
 	return r.append(event)
 }
