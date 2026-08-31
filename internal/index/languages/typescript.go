@@ -89,6 +89,8 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 			symbols = append(symbols, tsTypeAliasSymbol(child, source))
 		case "lexical_declaration":
 			symbols = append(symbols, tsLexicalSymbols(child, source)...)
+		case "expression_statement":
+			symbols = tsCommonJSSymbols(child, source, symbols)
 		case "export_statement":
 			// unwrap export default/named declarations
 			for j := range child.ChildCount() {
@@ -555,4 +557,81 @@ func tsFirstDescOfKind(node *tree_sitter.Node, kind string, source []byte) strin
 		}
 	}
 	return ""
+}
+
+// tsCommonJSSymbols extracts what the top-level walk cannot see in CommonJS,
+// where the code does not live at the top level at all.
+//
+// DECISION(2026-09): a JavaScript module written as
+//
+//	module.exports = function (module) {
+//	    module.listAppend = async function (key, value) { ... };
+//	    async function listPush(key) { ... }
+//	};
+//
+// used to index as ZERO symbols: the walk only inspected top-level children, and
+// everything here is one level down inside the wrapper. Measured on NodeBB
+// before this: 88.5% of all indexed symbols were `const` require() lines, methods
+// were 0.1% (two in the whole repository), and 27.9% of files had no symbol at
+// all — the index held the imports and almost none of the code. Java and Python
+// indexes of comparable repositories sit at 87% and 60% methods.
+//
+// Only two shapes are followed, both unambiguous module structure rather than
+// ordinary nesting: a function assigned to module.exports/exports (the wrapper),
+// and a function assigned to a member expression (the module's own methods).
+// Arbitrary nested functions are NOT collected — callbacks and closures would
+// bury the real symbols.
+// ASSUMES: `module.exports = function(...)` is the dominant CommonJS wrapper.
+// REVISIT IF: JS symbol density stays far below the other languages.
+func tsCommonJSSymbols(stmt *tree_sitter.Node, source []byte, symbols []store.Symbol) []store.Symbol {
+	assign := tsChildByKind(stmt, "assignment_expression")
+	if assign == nil {
+		return symbols
+	}
+	left, right := assign.ChildByFieldName("left"), assign.ChildByFieldName("right")
+	if left == nil || right == nil {
+		return symbols
+	}
+	if right.Kind() != "function_expression" && right.Kind() != "arrow_function" &&
+		right.Kind() != "function" && right.Kind() != "class" {
+		return symbols
+	}
+
+	// `module.exports = function (module) { ... }` — the wrapper itself is not a
+	// symbol; its BODY is the module's real top level, so walk it as one.
+	if target := nodeText(left, source); target == "module.exports" || target == "exports" {
+		if body := right.ChildByFieldName("body"); body != nil {
+			return tsWalkTopLevel(body, source, "", symbols)
+		}
+		return symbols
+	}
+
+	if left.Kind() != "member_expression" {
+		return symbols
+	}
+	name := nodeText(left.ChildByFieldName("property"), source)
+	if name == "" {
+		return symbols
+	}
+	object := nodeText(left.ChildByFieldName("object"), source)
+	kind, qname := store.KindMethod, object+"."+name
+	// `module.x = ...` inside the wrapper is the module's own export, not a
+	// method of some object named "module"; qualifying it that way would put a
+	// meaningless prefix on every symbol in the file.
+	if object == "module" || object == "exports" || object == "module.exports" {
+		kind, qname = store.KindFunction, name
+	}
+
+	excerpt, fullBody := bodyParts(assign, source)
+	return append(symbols, store.Symbol{
+		Name:          name,
+		Kind:          kind,
+		QualifiedName: qname,
+		StartLine:     int(assign.StartPosition().Row) + 1,
+		EndLine:       int(assign.EndPosition().Row) + 1,
+		Signature:     firstLine(excerpt),
+		Docstring:     tsJSDocComment(stmt, source),
+		BodyExcerpt:   excerpt,
+		FullBody:      fullBody,
+	})
 }

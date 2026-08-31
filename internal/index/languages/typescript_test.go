@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/codeus-morbid/contextmaxxer/internal/store"
 )
 
 const tsSource = `
@@ -250,5 +252,61 @@ func TestExtractor_JavaScriptAndTSXProduceEdges(t *testing.T) {
 			edges := ext.Edges(tree, source, nameToID)
 			requireEdge(t, edges, renderID, helperID, 6)
 		})
+	}
+}
+
+// commonJSSource is the shape NodeBB is written in: nothing lives at the top
+// level except the wrapper. Worked out by hand before the code: listPrepend
+// (assigned to a property) and listPush (declared inside the wrapper) are the
+// two real symbols; before this they were zero.
+const commonJSSource = `
+'use strict';
+
+module.exports = function (module) {
+	const helpers = require('./helpers');
+
+	module.listPrepend = async function (key, value) {
+		return helpers.first(key, value);
+	};
+
+	async function listPush(key, values) {
+		return module.client.push(key, values);
+	}
+};
+`
+
+func TestExtractor_CommonJSModuleIsNotEmpty(t *testing.T) {
+	ext, ok := New("javascript")
+	require.True(t, ok)
+
+	source := []byte(commonJSSource)
+	tree := NewTSXParser().Parse(source, nil)
+	syms := ext.Symbols(tree, source)
+
+	byName := map[string]string{}
+	for _, s := range syms {
+		byName[s.QualifiedName] = s.Kind
+	}
+	require.Contains(t, byName, "listPrepend", "symbols: %+v", byName)
+	require.Contains(t, byName, "listPush", "symbols: %+v", byName)
+	require.Equal(t, store.KindFunction, byName["listPrepend"],
+		"module.x = fn is a module-level function, not a method of an object named module")
+}
+
+// Ordinary nesting must NOT be collected, or every callback becomes a symbol
+// and the real ones drown.
+func TestExtractor_NestedCallbacksAreNotSymbols(t *testing.T) {
+	ext, _ := New("javascript")
+	source := []byte(`
+function outer() {
+	items.forEach(function inner(x) { return x; });
+	const local = () => 1;
+	return local;
+}
+`)
+	tree := NewTSXParser().Parse(source, nil)
+
+	for _, s := range ext.Symbols(tree, source) {
+		require.NotEqual(t, "inner", s.Name, "a callback inside a function body is not a symbol")
 	}
 }
