@@ -211,3 +211,44 @@ export function detached(x: number) { return x; }
 	require.Contains(t, syms["attached"].Docstring, "Documents the next declaration")
 	require.Empty(t, syms["detached"].Docstring)
 }
+
+// jsSource is JavaScript, which production parses with the TSX grammar. One
+// edge is expected: Widget.render -> helper.
+const jsSource = `
+function helper() {}
+
+class Widget {
+  render() {
+    helper();
+    return 1;
+  }
+}
+`
+
+// Goes through New() rather than constructing the extractor directly: the
+// language-to-grammar pairing IS the thing under test, and picking the
+// extractor by hand would skip the decision that was wrong.
+func TestExtractor_JavaScriptAndTSXProduceEdges(t *testing.T) {
+	for _, language := range []string{"javascript", "tsx"} {
+		t.Run(language, func(t *testing.T) {
+			ext, ok := New(language)
+			require.True(t, ok, "no extractor for %s", language)
+
+			source := []byte(jsSource)
+			tree := NewTSXParser().Parse(source, nil)
+			syms := ext.Symbols(tree, source)
+
+			nameToID := make(map[string]int64)
+			for i, s := range syms {
+				nameToID[s.QualifiedName] = int64(i + 1)
+			}
+			renderID := nameToID["Widget.render"]
+			helperID := nameToID["helper"]
+			require.NotZero(t, renderID, "symbols: %+v", nameToID)
+			require.NotZero(t, helperID, "symbols: %+v", nameToID)
+
+			edges := ext.Edges(tree, source, nameToID)
+			requireEdge(t, edges, renderID, helperID, 6)
+		})
+	}
+}

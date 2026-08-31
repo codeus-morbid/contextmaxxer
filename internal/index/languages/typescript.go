@@ -9,15 +9,54 @@ import (
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
 )
 
-type tsExtractor struct{}
+// tsExtractor serves TypeScript, TSX and JavaScript, which are parsed by TWO
+// different grammars — and a tree-sitter query is compiled against one grammar
+// and matches nothing on a tree built by another.
+//
+// DECISION(2026-09): the grammar is chosen per language instead of hardcoded.
+// Edges compiled its query against the TypeScript grammar unconditionally while
+// the parser gives .js/.jsx/.mjs/.cjs and .tsx a TSX tree, so every call query
+// silently found zero matches: NodeBB indexed 3673 symbols and exactly 0 edges,
+// which SWE-Explore then scored as the two worst instances of the pilot. Symbols
+// survived because that walk compares node kinds as strings, which no grammar
+// change can break — so the failure was invisible from the symbol side.
+// ASSUMES: the call query's node kinds (call_expression, member_expression,
+// property_identifier) are spelled the same in both grammars.
+// REVISIT IF: a third grammar joins this extractor — the pairing then wants a
+// table rather than a bool.
+type tsExtractor struct {
+	// tsx selects the TSX grammar, which the parser uses both for .tsx and for
+	// JavaScript (TSX is a superset that parses JSX too).
+	tsx bool
+}
 
 func tsLanguage() *tree_sitter.Language {
 	return tree_sitter.NewLanguage(tree_sitter_typescript.LanguageTypescript())
 }
 
+func tsxLanguage() *tree_sitter.Language {
+	return tree_sitter.NewLanguage(tree_sitter_typescript.LanguageTSX())
+}
+
+// queryLanguage returns the grammar this extractor's trees were parsed with. It
+// must agree with internal/index/parser.go, which owns that pairing.
+func (e *tsExtractor) queryLanguage() *tree_sitter.Language {
+	if e.tsx {
+		return tsxLanguage()
+	}
+	return tsLanguage()
+}
+
 func NewTSParser() *tree_sitter.Parser {
 	p := tree_sitter.NewParser()
 	p.SetLanguage(tsLanguage())
+	return p
+}
+
+// NewTSXParser parses the way .tsx and JavaScript files are parsed in production.
+func NewTSXParser() *tree_sitter.Parser {
+	p := tree_sitter.NewParser()
+	p.SetLanguage(tsxLanguage())
 	return p
 }
 
@@ -265,7 +304,7 @@ func (e *tsExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 	}
 
 	root := tree.RootNode()
-	lang := tsLanguage()
+	lang := e.queryLanguage()
 
 	// Capture the member-expression receiver too, so `this.field.method()` /
 	// `this.method()` can resolve by the field's DECLARED TS type (the DI pattern)

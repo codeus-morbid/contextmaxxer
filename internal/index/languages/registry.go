@@ -6,11 +6,14 @@ func New(language string) (index.LanguageExtractor, bool) {
 	switch language {
 	case "go":
 		return &goExtractor{}, true
-	case "typescript", "javascript", "tsx":
-		// tsx is a superset of typescript (adds JSX); the same extractor queries
-		// (function/class/method declarations) match its parse tree. Closes the
-		// React .tsx gap — without this case .tsx files were silently skipped.
+	case "typescript":
 		return &tsExtractor{}, true
+	case "javascript", "tsx":
+		// The same extractor handles all three, but the parser gives these two a
+		// TSX tree (TSX is a superset of typescript that also parses JSX), and
+		// the extractor's call query has to be compiled against that grammar to
+		// match anything. See tsExtractor.
+		return &tsExtractor{tsx: true}, true
 	case "python":
 		return &pyExtractor{}, true
 	default:
