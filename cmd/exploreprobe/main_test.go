@@ -43,6 +43,21 @@ func TestScore_WorkedExample(t *testing.T) {
 	}
 }
 
+// A response returns one entry per SYMBOL, so several entries commonly share a
+// file. Worked out by hand before the fix: gold is a.go alone, the response is
+// [a.go, a.go, b.go]. Only the first a.go is relevant, so DCG = 1/log2(2) = 1
+// and IDCG over one gold file = 1, giving exactly 1. Crediting the repeat gave
+// 1 + 1/log2(3) = 1.631 over the same IDCG — an nDCG above 1, which is not a
+// score at all.
+func TestScore_RepeatedGoldFileCannotPushNDCGAboveOne(t *testing.T) {
+	inst := instance{GoldFiles: []string{"a.go"}}
+	res := evalharness.Result{Files: []string{"a.go", "a.go", "b.go"}}
+
+	m := score(inst, res)
+	close(t, m.ndcg, 1, "ndcg")
+	close(t, m.fileRecall, 1, "one unique gold file was returned")
+}
+
 func TestScore_CompleteMissScoresZero(t *testing.T) {
 	// The metrics have to be able to say "nothing useful", or a run that found
 	// nothing would still look like partial credit.

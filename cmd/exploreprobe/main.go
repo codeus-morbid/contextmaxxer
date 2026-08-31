@@ -172,13 +172,19 @@ func score(inst instance, res evalharness.Result) metrics {
 		file = normPath(file)
 		rel := 0.0
 		if gold[file] {
-			rel = 1
 			m.hitFile = 1
 			if m.fuh == 0 {
 				m.fuh = i + 1
 			}
+			// Only the FIRST result from a gold file is relevant. A response
+			// carries one entry per symbol, so twenty results routinely cover two
+			// files; crediting every repeat pushed DCG past an IDCG computed over
+			// unique files and produced nDCG of 1.56 on the first real instance.
+			// A file already returned is already found — finding it again is not
+			// additional relevance.
 			if !seen[file] {
 				seen[file] = true
+				rel = 1
 			}
 		}
 		rels = append(rels, rel)
