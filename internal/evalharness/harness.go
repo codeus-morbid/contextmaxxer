@@ -24,6 +24,7 @@ type rpcResp struct {
 type toolPayload struct {
 	Symbols []struct {
 		Name      string  `json:"name"`
+		File      string  `json:"file"`
 		Score     float32 `json:"score"`
 		Relevance float32 `json:"relevance"`
 		Lines     string  `json:"lines"`
@@ -43,7 +44,11 @@ type toolPayload struct {
 
 // Result is one find_context response, reduced to what evaluation needs.
 type Result struct {
-	Names     []string
+	Names []string
+	// Files is each symbol's path, relative to the indexed root. Region-level
+	// benchmarks score (file, line-start, line-end) tuples, so the path is not
+	// optional there the way it is for name-matching probes.
+	Files     []string
 	Scores    []float32
 	Relevance []float32
 	// Lines is each symbol's full span ("120-380"); Visible is the span the
@@ -198,6 +203,7 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	out := Result{
 		Names:     make([]string, len(p.Symbols)),
+		Files:     make([]string, len(p.Symbols)),
 		Scores:    make([]float32, len(p.Symbols)),
 		Relevance: make([]float32, len(p.Symbols)),
 		Lines:     make([]string, len(p.Symbols)),
@@ -207,6 +213,7 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	for i, sym := range p.Symbols {
 		out.Names[i] = sym.Name
+		out.Files[i] = sym.File
 		out.Scores[i] = sym.Score
 		out.Relevance[i] = sym.Relevance
 		out.Lines[i] = sym.Lines
