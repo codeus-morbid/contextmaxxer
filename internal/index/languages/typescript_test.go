@@ -391,3 +391,26 @@ const NAME = "x";
 	require.Equal(t, store.KindConst, got["NAME"].Kind, "a string constant stays a const")
 	require.Empty(t, got["NAME"].BodyExcerpt, "plain data needs no body")
 }
+
+// An import binding names a symbol defined elsewhere; indexing it adds an entry
+// with no body whose name competes with the real definition.
+func TestExtractor_RequireBindingsAreNotSymbols(t *testing.T) {
+	ext, _ := New("javascript")
+	source := []byte(`
+const db = require('../database');
+const { each } = require('async');
+const posts = require('./posts').core;
+const MAX = 42;
+const helper = () => 1;
+`)
+	tree := NewTSXParser().Parse(source, nil)
+
+	got := map[string]string{}
+	for _, s := range ext.Symbols(tree, source) {
+		got[s.QualifiedName] = s.Kind
+	}
+	require.NotContains(t, got, "db", "symbols: %+v", got)
+	require.NotContains(t, got, "posts", "require(...).x is still an import")
+	require.Equal(t, store.KindConst, got["MAX"], "a real constant stays")
+	require.Equal(t, store.KindFunction, got["helper"], "a function stays")
+}

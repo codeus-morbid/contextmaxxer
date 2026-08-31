@@ -256,6 +256,9 @@ func tsLexicalSymbols(node *tree_sitter.Node, source []byte, declKind string) []
 		if name == "" {
 			continue
 		}
+		if tsIsImportBinding(child.ChildByFieldName("value"), source) {
+			continue
+		}
 		doc := tsJSDocComment(node, source)
 		sym := store.Symbol{
 			Name:          name,
@@ -724,4 +727,36 @@ func tsAMDFactoryBody(stmt *tree_sitter.Node, source []byte) *tree_sitter.Node {
 		}
 	}
 	return nil
+}
+
+// tsIsImportBinding reports whether a declaration is just naming an import —
+// `const db = require('../database')`.
+//
+// DECISION(2026-09): require() bindings are not indexed as symbols. Measured on
+// NodeBB, they were 51.5% of the whole index and carried no body: `db` appeared
+// 285 times, `meta` 165, `user` 146, `privileges` 112 — one identical entry per
+// file that imports the module. They cannot be edge targets (callableKind drops
+// const/var) and they have no code to match on, but their NAMES are exactly the
+// words a question about the system uses, so they competed for the twenty
+// result slots against the code that actually implements the thing. An import
+// is a reference to a symbol indexed elsewhere, not a definition.
+// ASSUMES: the module being imported is itself in the index, where it is
+// findable by its real contents. REVISIT IF: cross-file import edges are added
+// and need the binding as an anchor.
+func tsIsImportBinding(value *tree_sitter.Node, source []byte) bool {
+	if value == nil {
+		return false
+	}
+	// `require('x')` and `require('x').Thing` alike.
+	for value.Kind() == "member_expression" {
+		value = value.ChildByFieldName("object")
+		if value == nil {
+			return false
+		}
+	}
+	if value.Kind() != "call_expression" {
+		return false
+	}
+	fn := value.ChildByFieldName("function")
+	return fn != nil && fn.Kind() == "identifier" && nodeText(fn, source) == "require"
 }
