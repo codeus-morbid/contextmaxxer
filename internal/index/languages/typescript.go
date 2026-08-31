@@ -88,7 +88,9 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 		case "type_alias_declaration":
 			symbols = append(symbols, tsTypeAliasSymbol(child, source))
 		case "lexical_declaration":
-			symbols = append(symbols, tsLexicalSymbols(child, source)...)
+			symbols = append(symbols, tsLexicalSymbols(child, source, store.KindConst)...)
+		case "variable_declaration":
+			symbols = append(symbols, tsLexicalSymbols(child, source, store.KindVar)...)
 		case "expression_statement":
 			symbols = tsCommonJSSymbols(child, source, symbols)
 		case "export_statement":
@@ -113,7 +115,9 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 				case "type_alias_declaration":
 					symbols = append(symbols, tsTypeAliasSymbol(inner, source))
 				case "lexical_declaration":
-					symbols = append(symbols, tsLexicalSymbols(inner, source)...)
+					symbols = append(symbols, tsLexicalSymbols(inner, source, store.KindConst)...)
+				case "variable_declaration":
+					symbols = append(symbols, tsLexicalSymbols(inner, source, store.KindVar)...)
 				}
 			}
 		}
@@ -224,7 +228,20 @@ func tsTypeAliasSymbol(node *tree_sitter.Node, source []byte) store.Symbol {
 	}
 }
 
-func tsLexicalSymbols(node *tree_sitter.Node, source []byte) []store.Symbol {
+// tsLexicalSymbols reads `const`/`let` (and, with declKind var, `var`)
+// declarations.
+//
+// DECISION(2026-09): a declaration whose VALUE is a function or class is
+// indexed as that function or class, body and all, rather than as a bare name.
+// `export const handler = async (req) => {...}` is how a large share of modern
+// TS/JS states its functions, and it used to reach the index as a name with an
+// empty body: measured, every single const symbol had no body — 3280 of 3280 on
+// NodeBB, 306 of 306 on NestJS. Two things followed from that. Its code was
+// invisible to body FTS and to embeddings, and callableKind() in the retrieval
+// pipeline drops const/var as edge targets, so nothing could call it either.
+// ASSUMES: a declarator holding a function is meant as a definition, not data.
+// REVISIT IF: consts holding functions start dominating for some other reason.
+func tsLexicalSymbols(node *tree_sitter.Node, source []byte, declKind string) []store.Symbol {
 	var result []store.Symbol
 	for i := range node.ChildCount() {
 		child := node.Child(i)
@@ -240,17 +257,41 @@ func tsLexicalSymbols(node *tree_sitter.Node, source []byte) []store.Symbol {
 			continue
 		}
 		doc := tsJSDocComment(node, source)
-		result = append(result, store.Symbol{
+		sym := store.Symbol{
 			Name:          name,
-			Kind:          store.KindConst,
+			Kind:          declKind,
 			QualifiedName: name,
 			StartLine:     int(child.StartPosition().Row) + 1,
 			EndLine:       int(child.EndPosition().Row) + 1,
 			Signature:     name,
 			Docstring:     doc,
-		})
+		}
+		if kind, ok := tsValueKind(child.ChildByFieldName("value")); ok {
+			excerpt, fullBody := bodyParts(child, source)
+			sym.Kind = kind
+			sym.Signature = firstLine(excerpt)
+			sym.BodyExcerpt = excerpt
+			sym.FullBody = fullBody
+			sym.EndLine = int(child.EndPosition().Row) + 1
+		}
+		result = append(result, sym)
 	}
 	return result
+}
+
+// tsValueKind reports the symbol kind an assigned value deserves, and whether
+// it is a definition at all rather than plain data.
+func tsValueKind(value *tree_sitter.Node) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	switch value.Kind() {
+	case "function_expression", "arrow_function", "function", "generator_function":
+		return store.KindFunction, true
+	case "class", "class_expression":
+		return store.KindClass, true
+	}
+	return "", false
 }
 
 // tsJSDocComment finds the /** */ block that documents a declaration.
@@ -584,6 +625,9 @@ func tsFirstDescOfKind(node *tree_sitter.Node, kind string, source []byte) strin
 // ASSUMES: `module.exports = function(...)` is the dominant CommonJS wrapper.
 // REVISIT IF: JS symbol density stays far below the other languages.
 func tsCommonJSSymbols(stmt *tree_sitter.Node, source []byte, symbols []store.Symbol) []store.Symbol {
+	if body := tsAMDFactoryBody(stmt, source); body != nil {
+		return tsWalkTopLevel(body, source, "", symbols)
+	}
 	assign := tsChildByKind(stmt, "assignment_expression")
 	if assign == nil {
 		return symbols
@@ -634,4 +678,50 @@ func tsCommonJSSymbols(stmt *tree_sitter.Node, source []byte, symbols []store.Sy
 		BodyExcerpt:   excerpt,
 		FullBody:      fullBody,
 	})
+}
+
+// tsAMDFactoryBody returns the body of an AMD factory — `define(id, [deps], fn)`
+// or `require([deps], fn)` — whose contents are the module's real top level.
+//
+// DECISION(2026-09): AMD is unwrapped for the same reason CommonJS is, and it is
+// not a rare shape: every client-side file in NodeBB is written this way, and
+// they were the largest files carrying no symbol at all (public/src/app.js at
+// 23KB indexed as nothing). Only `define` and `require` are unwrapped, by name.
+// Descending into any call that takes a function would swallow every
+// forEach/then/describe callback and bury the real symbols under them.
+// ASSUMES: `define`/`require` at statement level mean AMD, not a local helper of
+// the same name. REVISIT IF: a codebase defines its own define()/require().
+func tsAMDFactoryBody(stmt *tree_sitter.Node, source []byte) *tree_sitter.Node {
+	call := tsChildByKind(stmt, "call_expression")
+	if call == nil {
+		return nil
+	}
+	fn := call.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "identifier" {
+		return nil
+	}
+	switch nodeText(fn, source) {
+	case "define", "require":
+	default:
+		return nil
+	}
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return nil
+	}
+	// The factory is the last function argument; the ones before it are the
+	// module id and its dependency list.
+	for i := args.ChildCount(); i > 0; i-- {
+		arg := args.Child(i - 1)
+		if arg == nil {
+			continue
+		}
+		if _, ok := tsValueKind(arg); !ok {
+			continue
+		}
+		if body := arg.ChildByFieldName("body"); body != nil {
+			return body
+		}
+	}
+	return nil
 }

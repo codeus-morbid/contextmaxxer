@@ -310,3 +310,84 @@ function outer() {
 		require.NotEqual(t, "inner", s.Name, "a callback inside a function body is not a symbol")
 	}
 }
+
+// amdSource is how every client-side file in NodeBB is written. Worked out by
+// hand before the code: navigator and count are vars, navigator.init is a
+// method assigned to a property, helper is declared inside the factory — four
+// symbols where there were none.
+const amdSource = `
+'use strict';
+
+define('navigator', ['components'], function (components) {
+	var navigator = {};
+	var count = 0;
+
+	navigator.scrollActive = false;
+
+	navigator.init = function (cb) {
+		return cb(count);
+	};
+
+	function helper(x) {
+		return components.get(x);
+	}
+
+	return navigator;
+});
+`
+
+func TestExtractor_AMDFactoryIsUnwrapped(t *testing.T) {
+	ext, _ := New("javascript")
+	source := []byte(amdSource)
+	tree := NewTSXParser().Parse(source, nil)
+
+	byName := map[string]string{}
+	for _, s := range ext.Symbols(tree, source) {
+		byName[s.QualifiedName] = s.Kind
+	}
+	require.Equal(t, store.KindVar, byName["navigator"], "symbols: %+v", byName)
+	require.Equal(t, store.KindVar, byName["count"], "symbols: %+v", byName)
+	require.Equal(t, store.KindMethod, byName["navigator.init"], "symbols: %+v", byName)
+	require.Equal(t, store.KindFunction, byName["helper"], "symbols: %+v", byName)
+	require.NotContains(t, byName, "navigator.scrollActive", "assigning a boolean is not a definition")
+}
+
+// An ordinary call taking a callback must NOT be unwrapped, or every
+// forEach/then/describe body becomes top level.
+func TestExtractor_OnlyAMDCallsAreUnwrapped(t *testing.T) {
+	ext, _ := New("javascript")
+	source := []byte(`
+describe('suite', function () {
+	function shouldNotBeIndexed() {}
+	var alsoNot = 1;
+});
+`)
+	tree := NewTSXParser().Parse(source, nil)
+	for _, s := range ext.Symbols(tree, source) {
+		require.NotEqual(t, "shouldNotBeIndexed", s.Name, "describe() is not a module factory")
+		require.NotEqual(t, "alsoNot", s.Name, "describe() is not a module factory")
+	}
+}
+
+// A declaration whose value is a function is the function: it needs its body,
+// or it is invisible to body search and cannot be an edge target either.
+func TestExtractor_FunctionValuedDeclarationsCarryTheirBody(t *testing.T) {
+	ext, _ := New("typescript")
+	source := []byte(`
+export const handler = async (req) => {
+	return req.id;
+};
+
+const NAME = "x";
+`)
+	tree := NewTSParser().Parse(source, nil)
+
+	got := map[string]store.Symbol{}
+	for _, s := range ext.Symbols(tree, source) {
+		got[s.QualifiedName] = s
+	}
+	require.Equal(t, store.KindFunction, got["handler"].Kind, "an arrow function in a const is a function")
+	require.Contains(t, got["handler"].BodyExcerpt, "req.id", "the body has to reach the index")
+	require.Equal(t, store.KindConst, got["NAME"].Kind, "a string constant stays a const")
+	require.Empty(t, got["NAME"].BodyExcerpt, "plain data needs no body")
+}
