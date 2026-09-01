@@ -189,3 +189,71 @@ func TestDecodeQuery(t *testing.T) {
 		}
 	}
 }
+
+// Worked out by hand before the code. Budget 10; the response shows a.go 1-4
+// (4 lines), b.go 1-5 (5), c.go 1-3 (3), so the cumulative run is 4, 9, 12 and
+// the prefix stops at two results — c.go does not fit and nothing after it is
+// squeezed in. Gold is a.go 1-2 and b.go 3-7, seven lines in all; the overlap
+// is a.go{1,2} plus b.go{3,4,5} = 5 of the 9 lines shown.
+//
+//	Recall    5/7 = 0.714
+//	Precision 5/9 = 0.556
+//	F1        2*0.556*0.714/(0.556+0.714) = 0.625
+//	nDCG      (2/log2(2) + 3/log2(3)) / (5/log2(2) + 2/log2(3))
+//	          = 3.893 / 6.262 = 0.622
+func TestScoreWithBudget_WorkedExample(t *testing.T) {
+	inst := instance{
+		GoldFiles: []string{"a.go", "b.go"},
+		GoldRegions: []region{
+			{Path: "a.go", Start: 1, End: 2},
+			{Path: "b.go", Start: 3, End: 7},
+		},
+	}
+	res := evalharness.Result{
+		Files:   []string{"a.go", "b.go", "c.go"},
+		Visible: []string{"1-4", "1-5", "1-3"},
+	}
+
+	m := scoreWithBudget(inst, res, 10)
+	if m.kept != 2 {
+		t.Fatalf("budget prefix: kept %d want 2", m.kept)
+	}
+	close(t, m.lineRecall, 5.0/7.0, "recall")
+	close(t, m.efficiency, 5.0/9.0, "precision")
+	close(t, m.f1, 2*(5.0/9.0)*(5.0/7.0)/((5.0/9.0)+(5.0/7.0)), "f1")
+	close(t, m.ndcgB, (2/math.Log2(2)+3/math.Log2(3))/(5/math.Log2(2)+2/math.Log2(3)), "ndcg@B")
+	close(t, m.hitRegion, 1, "both gold regions were overlapped")
+	close(t, m.fileRecall, 1, "both gold files are in the kept prefix")
+}
+
+// A result larger than the whole budget must not be scored as if it were free.
+func TestScoreWithBudget_FirstResultOverBudgetKeepsNothing(t *testing.T) {
+	inst := instance{
+		GoldFiles:   []string{"a.go"},
+		GoldRegions: []region{{Path: "a.go", Start: 1, End: 5}},
+	}
+	res := evalharness.Result{Files: []string{"a.go"}, Visible: []string{"1-600"}}
+
+	m := scoreWithBudget(inst, res, 500)
+	if m.kept != 0 {
+		t.Fatalf("kept %d want 0", m.kept)
+	}
+	close(t, m.lineRecall, 0, "nothing was within budget")
+	close(t, m.hitFile, 0, "nothing was within budget")
+}
+
+// Without a budget the prefix is the whole response, so the older tests keep
+// describing the same behaviour.
+func TestScoreWithBudget_ZeroMeansUnlimited(t *testing.T) {
+	inst := instance{
+		GoldFiles:   []string{"a.go"},
+		GoldRegions: []region{{Path: "a.go", Start: 1, End: 5}},
+	}
+	res := evalharness.Result{Files: []string{"a.go"}, Visible: []string{"1-5"}}
+
+	m := scoreWithBudget(inst, res, 0)
+	if m.kept != 1 {
+		t.Fatalf("kept %d want 1", m.kept)
+	}
+	close(t, m.lineRecall, 1, "recall")
+}

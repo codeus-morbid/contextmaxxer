@@ -62,6 +62,7 @@ func main() {
 	n := flag.Int("n", 0, "score at most this many instances (0 = all indexed ones)")
 	dataset := flag.String("dataset", "", "restrict to one sub-dataset: verified|multilingual|pro")
 	maxResults := flag.Int("max", 20, "max_results per call; the benchmark ranks a list, so this is the list")
+	budget := flag.Int("budget", 500, "line budget B: score the longest prefix whose visible lines fit (0 = no budget). The benchmark reports every baseline at B=500")
 	verbose := flag.Bool("v", false, "print every scored instance")
 	flag.Parse()
 
@@ -78,6 +79,8 @@ func main() {
 		sumLineRecall, sumEfficiency           float64
 		sumFUH                                 float64
 		fuhCount                               int
+		sumHitRegion, sumF1, sumNDCGB          float64
+		sumKept, sumShown                      int
 	)
 
 	for _, inst := range instances {
@@ -111,7 +114,7 @@ func main() {
 			continue
 		}
 
-		m := score(inst, res)
+		m := scoreWithBudget(inst, res, *budget)
 		scored++
 		sumHitFile += m.hitFile
 		sumFileRecall += m.fileRecall
@@ -122,9 +125,14 @@ func main() {
 			sumFUH += float64(m.fuh)
 			fuhCount++
 		}
+		sumHitRegion += m.hitRegion
+		sumF1 += m.f1
+		sumNDCGB += m.ndcgB
+		sumKept += m.kept
+		sumShown += m.shownLines
 		if *verbose {
-			fmt.Printf("%-52s hit=%.0f fileR=%.2f ndcg=%.2f lineR=%.2f eff=%.2f fuh=%d\n",
-				inst.InstanceID, m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency, m.fuh)
+			fmt.Printf("%-52s hit=%.0f fileR=%.2f ndcg=%.2f lineR=%.2f eff=%.2f fuh=%d kept=%d lines=%d\n",
+				inst.InstanceID, m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency, m.fuh, m.kept, m.shownLines)
 		}
 	}
 
@@ -147,12 +155,27 @@ func main() {
 		fmt.Printf("First useful   %.2f   mean rank of the first gold file (over %d instances that hit)\n",
 			sumFUH/float64(fuhCount), fuhCount)
 	}
+
+	// The paper's own column names, so the two tables can be read side by side.
+	// Their HitFile is the SHARE of gold files reached (our File recall), and
+	// their Prec is the share of returned lines that are gold (our Efficiency) —
+	// the names collide with ours, which is why they are restated here.
+	fmt.Printf("\n--- benchmark protocol, B=%d (paper's column names) ---\n", *budget)
+	fmt.Printf("HitReg  %.3f | Prec %.3f | Rec_l %.3f | F1 %.3f | HitFile %.3f | nDCG@%d %.3f\n",
+		sumHitRegion/f, sumEfficiency/f, sumLineRecall/f, sumF1/f, sumFileRecall/f, *budget, sumNDCGB/f)
+	fmt.Printf("kept %.1f of %d results per instance, %.0f visible lines on average\n",
+		float64(sumKept)/f, *maxResults, float64(sumShown)/f)
+	fmt.Println("nDCG is our reading of their formula; Prec/Rec/HitFile are unambiguous.")
 }
 
 type metrics struct {
 	hitFile, fileRecall, ndcg float64
 	lineRecall, efficiency    float64
 	fuh                       int
+
+	// The benchmark's own protocol, computed over the in-budget prefix.
+	hitRegion, f1, ndcgB float64
+	kept, shownLines     int
 }
 
 // score turns one response into the benchmark's metrics. Line-level numbers use
@@ -160,15 +183,24 @@ type metrics struct {
 // extent: efficiency is a cost metric, and charging ourselves for lines we never
 // sent would flatter it exactly where this tool trims hardest.
 func score(inst instance, res evalharness.Result) metrics {
+	return scoreWithBudget(inst, res, 0)
+}
+
+// scoreWithBudget scores only what fits the line budget, which is how the
+// benchmark reports every published baseline. budget <= 0 scores the whole
+// response.
+func scoreWithBudget(inst instance, res evalharness.Result, budget int) metrics {
 	gold := make(map[string]bool, len(inst.GoldFiles))
 	for _, f := range inst.GoldFiles {
 		gold[normPath(f)] = true
 	}
 
+	cut := budgetPrefix(res, budget)
 	var m metrics
+	m.kept = cut
 	seen := map[string]bool{}
 	var rels []float64
-	for i, file := range res.Files {
+	for i, file := range res.Files[:cut] {
 		file = normPath(file)
 		rel := 0.0
 		if gold[file] {
@@ -195,7 +227,8 @@ func score(inst instance, res evalharness.Result) metrics {
 	m.ndcg = ndcg(rels, len(gold))
 
 	goldLines := lineSet(inst.GoldRegions)
-	shown := shownLines(res)
+	shown := shownLines(res, cut)
+	m.shownLines = len(shown)
 	if len(goldLines) > 0 {
 		var covered int
 		for k := range shown {
@@ -207,7 +240,12 @@ func score(inst instance, res evalharness.Result) metrics {
 		if len(shown) > 0 {
 			m.efficiency = float64(covered) / float64(len(shown))
 		}
+		if m.lineRecall+m.efficiency > 0 {
+			m.f1 = 2 * m.efficiency * m.lineRecall / (m.efficiency + m.lineRecall)
+		}
 	}
+	m.hitRegion = hitRegion(inst, res, cut)
+	m.ndcgB = ndcgBudget(inst, res, cut, budget)
 	return m
 }
 
@@ -233,24 +271,11 @@ func lineSet(regions []region) map[lineKey]bool {
 	return out
 }
 
-func shownLines(res evalharness.Result) map[lineKey]bool {
+func shownLines(res evalharness.Result, cut int) map[lineKey]bool {
 	out := map[lineKey]bool{}
-	for i, file := range res.Files {
-		span := ""
-		if i < len(res.Visible) {
-			span = res.Visible[i]
-		}
-		if span == "" && i < len(res.Lines) {
-			span = res.Lines[i]
-		}
-		for _, part := range strings.Split(span, ",") {
-			start, end, ok := parseSpan(part)
-			if !ok {
-				continue
-			}
-			for l := start; l <= end; l++ {
-				out[lineKey{normPath(file), l}] = true
-			}
+	for i, file := range res.Files[:cut] {
+		for l := range spanLines(res, i) {
+			out[lineKey{normPath(file), l}] = true
 		}
 	}
 	return out
@@ -343,4 +368,134 @@ func decodeQuery(q string) string {
 		return q
 	}
 	return inner
+}
+
+// budgetPrefix returns how many results fit the benchmark's line budget: "the
+// longest prediction prefix whose cumulative |L(·)| does not exceed B". It is a
+// PREFIX, so the first result that does not fit ends the list — later, smaller
+// ones are not squeezed in, because the agent reads the ranking in order.
+//
+// DECISION(2026-09): the budget is the benchmark's own protocol (B=500, also
+// reported at 100 and 300) and without it our numbers cannot be put beside the
+// published BM25/TF-IDF/agent baselines at all. It also changes the question
+// being asked: returning twenty symbols regardless of size rewards recall that
+// an agent would never read, while a budget scores what fits in the window it
+// actually gets.
+func budgetPrefix(res evalharness.Result, budget int) int {
+	if budget <= 0 {
+		return len(res.Files)
+	}
+	total := 0
+	for i := range res.Files {
+		n := len(spanLines(res, i))
+		if total+n > budget {
+			return i
+		}
+		total += n
+	}
+	return len(res.Files)
+}
+
+// spanLines is the set of lines one result actually shows.
+func spanLines(res evalharness.Result, i int) map[int]bool {
+	span := ""
+	if i < len(res.Visible) {
+		span = res.Visible[i]
+	}
+	if span == "" && i < len(res.Lines) {
+		span = res.Lines[i]
+	}
+	out := map[int]bool{}
+	for _, part := range strings.Split(span, ",") {
+		start, end, ok := parseSpan(part)
+		if !ok {
+			continue
+		}
+		for l := start; l <= end; l++ {
+			out[l] = true
+		}
+	}
+	return out
+}
+
+// ndcgBudget implements the benchmark's ranking metric: DCG@B = sum over the
+// in-budget prefix of g_i/log2(i+2), where g_i is the count of core lines that
+// result i covers for the FIRST time.
+//
+// The ideal is the gold regions themselves, largest first, taken while they fit
+// the same budget. That is our reading of "the best DCG attainable on the same
+// instance under the same line budget"; the paper reports Oracle at 0.858
+// rather than 1.000, so their ideal is normalised somewhat differently and this
+// number should be treated as our approximation of their metric, unlike
+// precision/recall/HitFile which are unambiguous.
+func ndcgBudget(inst instance, res evalharness.Result, cut, budget int) float64 {
+	goldLines := lineSet(inst.GoldRegions)
+	covered := map[lineKey]bool{}
+	var dcg float64
+	for i := 0; i < cut; i++ {
+		file := normPath(res.Files[i])
+		gain := 0
+		for line := range spanLines(res, i) {
+			k := lineKey{file, line}
+			if goldLines[k] && !covered[k] {
+				covered[k] = true
+				gain++
+			}
+		}
+		dcg += float64(gain) / math.Log2(float64(i+2))
+	}
+
+	sizes := make([]int, 0, len(inst.GoldRegions))
+	for _, r := range inst.GoldRegions {
+		end := r.End
+		if end-r.Start > 5000 {
+			end = r.Start + 5000
+		}
+		if n := end - r.Start + 1; n > 0 {
+			sizes = append(sizes, n)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(sizes)))
+	var idcg float64
+	spent := 0
+	for i, n := range sizes {
+		if budget > 0 && spent+n > budget {
+			break
+		}
+		spent += n
+		idcg += float64(n) / math.Log2(float64(i+2))
+	}
+	if idcg == 0 {
+		return 0
+	}
+	return dcg / idcg
+}
+
+// hitRegion is the benchmark's "fraction of core regions for which the explorer
+// surfaced at least one overlapping prediction".
+func hitRegion(inst instance, res evalharness.Result, cut int) float64 {
+	if len(inst.GoldRegions) == 0 {
+		return 0
+	}
+	shown := map[lineKey]bool{}
+	for i := 0; i < cut; i++ {
+		file := normPath(res.Files[i])
+		for line := range spanLines(res, i) {
+			shown[lineKey{file, line}] = true
+		}
+	}
+	hit := 0
+	for _, r := range inst.GoldRegions {
+		end := r.End
+		if end-r.Start > 5000 {
+			end = r.Start + 5000
+		}
+		for line := r.Start; line <= end; line++ {
+			if shown[lineKey{normPath(r.Path), line}] {
+				hit++
+				break
+			}
+		}
+	}
+	return float64(hit) / float64(len(inst.GoldRegions))
 }
