@@ -7,7 +7,7 @@ promise that experimental models or training artifacts ship with releases.
 - [Product benchmark and research log](../../BENCHMARK.md) — paired-agent
   comparisons, CORE-Bench evaluation and negative results
 - [SWE-Explore, partial run](swe-explore.md) — external whole-pipeline
-  benchmark against published BM25/TF-IDF/agent baselines; 45% of the set, with
+  benchmark against published BM25/TF-IDF/agent baselines; 52% of the set, with
   its sampling bias stated
 - [Public evaluation](../evaluation.md) — the small checked-in regression suite
 - [`cmd/corebench`](../../cmd/corebench) — public CORE-Bench runner

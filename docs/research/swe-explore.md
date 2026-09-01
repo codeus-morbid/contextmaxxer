@@ -1,6 +1,6 @@
 # SWE-Explore: partial run
 
-**Status: interim. 387 of 848 instances (45%), not a full run.** These numbers
+**Status: interim. 438 of 848 instances (52%), not a full run.** These numbers
 are a research record, not a product claim, and the sample is biased in a way
 that matters — see [Limits](#limits) before quoting anything here.
 
@@ -38,18 +38,17 @@ other four metrics are unambiguous and are not hedged.
 
 ## Results
 
-387 instances (verified 147, pro 126, multilingual 114), B = 500, served
-defaults:
+438 instances (52% of the benchmark), B = 500, served defaults:
 
 | | **Contextmaxxer** | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| HitFile | **0.522** | 0.079 | 0.140 | 0.088 | 0.544 | 0.667 | 0.923 |
-| Prec | **0.338** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
+| HitFile | **0.531** | 0.079 | 0.140 | 0.088 | 0.544 | 0.667 | 0.923 |
+| Prec | **0.342** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
 | Rec_l | **0.051** | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
-| HitRegion | **0.363** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
+| HitRegion | **0.367** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
 
 Baseline figures are the paper's, measured on all 848 instances; ours are on
-the 387 subset, so the comparison is indicative rather than like-for-like.
+the 438 subset, so the comparison is indicative rather than like-for-like.
 
 Contextmaxxer is several times above every non-agentic method and level with
 CoSIL on file reach. [CoSIL](https://www.arxiv.org/abs/2503.22424v1) (ASE 2025)
@@ -64,9 +63,39 @@ precision.
 
 Line recall is the weak column, and the sweeps below explain why.
 
+### Per repository, and a guess that did not survive
+
+An earlier version of this note guessed that the subset understated the tool,
+because the cheap-to-index repositories it favoured are small while the best
+results seen so far were on large corpora. **Django was then indexed — 50
+instances, the largest Python corpus in the set at ~22k symbols a snapshot —
+and the guess did not hold.**
+
+| Repository | Language | n | HitFile | HitRegion | Prec |
+|---|---|---:|---:|---:|---:|
+| scikit-learn | Python | 31 | 0.651 | **0.568** | **0.556** |
+| requests | Python | 8 | 0.638 | 0.462 | 0.457 |
+| astropy | Python | 21 | 0.552 | 0.458 | 0.401 |
+| xarray | Python | 18 | 0.625 | 0.449 | 0.380 |
+| django | Python | 50 | 0.600 | 0.399 | 0.373 |
+| sphinx | Python | 37 | 0.504 | 0.395 | 0.366 |
+| vuls | Go | 21 | 0.546 | 0.327 | 0.351 |
+| qutebrowser | Python | 34 | 0.439 | 0.318 | 0.404 |
+| NodeBB | JavaScript | 22 | 0.388 | 0.292 | 0.329 |
+| openlibrary | Python | 21 | 0.381 | 0.218 | 0.186 |
+| preact | JavaScript | 11 | 0.458 | 0.209 | 0.084 |
+| navidrome | Go | 12 | 0.334 | 0.186 | 0.345 |
+
+django lands mid-table, above the overall average but well below scikit-learn,
+which is a third its size — and `requests`, at 35 code files, scores higher
+still. Corpus size is not the driver. Language looks like the stronger signal:
+the whole top half is Python, and both JavaScript repositories sit at the
+bottom, with preact still worst on precision (0.084) and first-useful-hit (6.7)
+even after three extractor fixes.
+
 ## What the sweeps established
 
-Two independent axes were measured over the same 387 instances.
+Two independent axes were measured over the 387 instances available at the time.
 
 **Full bodies per response** ([`-full`](../../cmd/exploreprobe)):
 
@@ -100,18 +129,21 @@ is nothing to add without paying precision for it.
 
 ## Limits
 
-- **45% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
-  django alone is 209 instances and ~23 hours of it.
-- **The subset is biased toward small and mid-sized repositories** — they were
-  chosen because they index cheaply. django, sympy and ansible are absent, and
-  the tool's strongest observed results are on large corpora (all three lucene
-  instances of the pilot scored file recall 1.00), so the subset is likely
-  unflattering rather than flattering. That is a guess, not a measurement.
+- **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
+  django alone would be 209 instances and ~24 hours of it, of which 50 were run.
+- **The subset over-represents Python**, which is also where the tool scores
+  best, so the overall averages are probably flattered rather than understated.
+  sympy and ansible are still absent. (The earlier worry ran the other way —
+  that omitting large repositories understated the tool — and the django run
+  settled it: size is not the driver, language is.)
 - Baselines come from the paper and were run on the full set.
-- The scoring metric itself was wrong twice during this work — once producing
-  nDCG above 1, once crediting coverage of lines the response never sent. Both
-  are fixed and covered by tests, but the history is a reason to treat any
-  single number here as provisional.
+- **The scoring metric itself was wrong twice** during this work — once
+  producing nDCG above 1, once crediting coverage of lines the response never
+  sent — and the source data was corrupt a third time: 16 of 848 snapshots held
+  a duplicate copy of their own tree, which doubles the symbols and collapses
+  the call graph, since edge resolution requires a unique name. All three are
+  fixed, the affected snapshots reindexed, and the fixes carry tests. The
+  history is still a reason to treat any single number here as provisional.
 
 ## Reproducing
 
