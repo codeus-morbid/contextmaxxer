@@ -63,6 +63,8 @@ func main() {
 	dataset := flag.String("dataset", "", "restrict to one sub-dataset: verified|multilingual|pro")
 	maxResults := flag.Int("max", 20, "max_results per call; the benchmark ranks a list, so this is the list")
 	budget := flag.Int("budget", 500, "line budget B: score the longest prefix whose visible lines fit (0 = no budget). The benchmark reports every baseline at B=500")
+	fullBodies := flag.Int("full", 0, "how many top results keep their full body (0 = served default of 3, -1 = all). The single biggest lever on how much code the answer contains")
+	rerankK := flag.Int("rerank", 0, "cross-encoder pool size (0 = served default 15). Below max_results the tail of the response is never reranked")
 	verbose := flag.Bool("v", false, "print every scored instance")
 	flag.Parse()
 
@@ -105,6 +107,12 @@ func main() {
 			errored++
 			fmt.Fprintf(os.Stderr, "%s: start: %v\n", inst.InstanceID, err)
 			continue
+		}
+		if *fullBodies != 0 {
+			srv.SetFullBodies(*fullBodies)
+		}
+		if *rerankK > 0 {
+			srv.SetRerankK(*rerankK)
 		}
 		res, err := srv.Find(inst.Query, *maxResults)
 		srv.Stop()

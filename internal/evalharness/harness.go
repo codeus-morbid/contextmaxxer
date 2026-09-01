@@ -73,6 +73,8 @@ type Server struct {
 	out        *bufio.Scanner
 	seq        int
 	seedK      int
+	fullBodies int
+	rerankK    int
 	skipIntent bool
 }
 
@@ -146,6 +148,13 @@ func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
 // subsequent call on this server (experiment knob; 0 = server default).
 func (s *Server) SetSeedK(k int) { s.seedK = k }
 
+// SetFullBodies controls how many top results keep their full body (-1 = all).
+func (s *Server) SetFullBodies(n int) { s.fullBodies = n }
+
+// SetRerankK sizes the cross-encoder pool; it must be >= max_results or the
+// tail of a long response never reaches the reranker.
+func (s *Server) SetRerankK(k int) { s.rerankK = k }
+
 // FindContext calls the find_context tool and returns ranked qualified names.
 func (s *Server) FindContext(query string, maxResults int) ([]string, error) {
 	res, err := s.Find(query, maxResults)
@@ -174,6 +183,12 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		// json: harnesses score ranking, not encoding; the md and
 		// json paths share the retrieval result.
 		"format": "json",
+	}
+	if s.fullBodies != 0 {
+		args["full_body_results"] = s.fullBodies
+	}
+	if s.rerankK > 0 {
+		args["rerank_k"] = s.rerankK
 	}
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
