@@ -414,3 +414,34 @@ const helper = () => 1;
 	require.Equal(t, store.KindConst, got["MAX"], "a real constant stays")
 	require.Equal(t, store.KindFunction, got["helper"], "a function stays")
 }
+
+// TypeScript hides code behind namespaces the same way CommonJS hides it behind
+// a factory. Worked out by hand before the fix: f, O, apply and g are the four
+// symbols in this source, and every one of them used to be missed.
+func TestExtractor_NamespacesAndAmbientDeclarationsAreUnwrapped(t *testing.T) {
+	ext, _ := New("typescript")
+	source := []byte(`
+export namespace S {
+	export function f(): number { return 1; }
+	interface O { size: number; }
+}
+
+declare namespace R {
+	function apply(t: Function): any;
+}
+
+declare module "m" {
+	export function g(): void;
+}
+`)
+	tree := NewTSParser().Parse(source, nil)
+
+	got := map[string]string{}
+	for _, s := range ext.Symbols(tree, source) {
+		got[s.QualifiedName] = s.Kind
+	}
+	require.Equal(t, store.KindFunction, got["f"], "symbols: %+v", got)
+	require.Equal(t, store.KindInterface, got["O"], "symbols: %+v", got)
+	require.Equal(t, store.KindFunction, got["apply"], "declare namespace: %+v", got)
+	require.Equal(t, store.KindFunction, got["g"], "declare module: %+v", got)
+}

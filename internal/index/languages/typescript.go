@@ -74,7 +74,9 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 			continue
 		}
 		switch child.Kind() {
-		case "function_declaration":
+		case "function_declaration", "function_signature":
+			// function_signature is a body-less declaration, which is what a
+			// .d.ts file consists of.
 			symbols = append(symbols, tsFuncSymbol(child, source))
 		case "class_declaration":
 			sym := tsClassSymbol(child, source)
@@ -93,6 +95,16 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 			symbols = append(symbols, tsLexicalSymbols(child, source, store.KindVar)...)
 		case "expression_statement":
 			symbols = tsCommonJSSymbols(child, source, symbols)
+		case "internal_module", "module":
+			// `namespace X { ... }` / `module X { ... }`: the block is the real
+			// top level, exactly like a CommonJS or AMD wrapper.
+			if body := child.ChildByFieldName("body"); body != nil {
+				symbols = tsWalkTopLevel(body, source, className, symbols)
+			}
+		case "ambient_declaration":
+			// `declare namespace`, `declare module "x"`, `declare function f()`:
+			// recursing over its children reaches whichever of those it is.
+			symbols = tsWalkTopLevel(child, source, className, symbols)
 		case "export_statement":
 			// unwrap export default/named declarations
 			for j := range child.ChildCount() {
@@ -101,7 +113,7 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 					continue
 				}
 				switch inner.Kind() {
-				case "function_declaration":
+				case "function_declaration", "function_signature":
 					symbols = append(symbols, tsFuncSymbol(inner, source))
 				case "class_declaration":
 					sym := tsClassSymbol(inner, source)
@@ -118,10 +130,13 @@ func tsWalkTopLevel(node *tree_sitter.Node, source []byte, className string, sym
 					symbols = append(symbols, tsLexicalSymbols(inner, source, store.KindConst)...)
 				case "variable_declaration":
 					symbols = append(symbols, tsLexicalSymbols(inner, source, store.KindVar)...)
+				case "internal_module", "module":
+					if body := inner.ChildByFieldName("body"); body != nil {
+						symbols = tsWalkTopLevel(body, source, className, symbols)
+					}
 				}
 			}
 		}
-		_ = className
 	}
 	return symbols
 }
