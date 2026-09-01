@@ -65,7 +65,9 @@ func main() {
 	budget := flag.Int("budget", 500, "line budget B: score the longest prefix whose visible lines fit (0 = no budget). The benchmark reports every baseline at B=500")
 	fullBodies := flag.Int("full", 0, "how many top results keep their full body (0 = served default of 3, -1 = all). The single biggest lever on how much code the answer contains")
 	rerankK := flag.Int("rerank", 0, "cross-encoder pool size (0 = served default 15). Below max_results the tail of the response is never reranked")
+	only := flag.String("only", "", "score just this instance_id. A distributed worker deletes each snapshot after scoring it, so without this the scorer would re-walk every index still on disk")
 	verbose := flag.Bool("v", false, "print every scored instance")
+	csvOut := flag.Bool("csv", false, "print one machine-readable row per instance instead of a summary. Runs split across machines must be merged from these rows: averaging each machine's summary weights small shards equally with large ones")
 	flag.Parse()
 
 	instances, err := loadManifest(*manifestPath, *dataset)
@@ -88,6 +90,9 @@ func main() {
 	for _, inst := range instances {
 		if *n > 0 && scored >= *n {
 			break
+		}
+		if *only != "" && inst.InstanceID != *only {
+			continue
 		}
 		if len(inst.GoldFiles) == 0 {
 			skippedNoGold++
@@ -138,10 +143,23 @@ func main() {
 		sumNDCGB += m.ndcgB
 		sumKept += m.kept
 		sumShown += m.shownLines
-		if *verbose {
+		switch {
+		case *csvOut:
+			fmt.Printf("%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%d,%d\n",
+				inst.InstanceID, inst.Dataset, inst.Repo,
+				m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency,
+				m.fuh, m.hitRegion, m.f1, m.ndcgB, m.kept, m.shownLines)
+		case *verbose:
 			fmt.Printf("%-52s hit=%.0f fileR=%.2f ndcg=%.2f lineR=%.2f eff=%.2f fuh=%d kept=%d lines=%d\n",
 				inst.InstanceID, m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency, m.fuh, m.kept, m.shownLines)
 		}
+	}
+
+	if *csvOut {
+		// The header goes last so the rows can be concatenated across machines
+		// without stripping anything; it is a comment line.
+		fmt.Fprintln(os.Stderr, "#instance_id,dataset,repo,hit,file_recall,ndcg,line_recall,efficiency,fuh,hit_region,f1,ndcg_b,kept,lines")
+		return
 	}
 
 	if scored == 0 {
