@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,6 +199,17 @@ func (s *Server) Serve(ctx context.Context) error {
 		// ceiling on what any ranking can reach, and its size was calibrated on
 		// repos ~30x smaller than the largest indexes we now serve.
 		seedK := req.GetInt("seed_k", 0)
+		// Experiment hook: the weight between lexical/vector seeds and
+		// personalized PageRank. 1.0 is seeds only, which is how much of the
+		// answer the graph is responsible for — a question the observational
+		// data cannot settle, since graph density tracks language.
+		var alpha float64
+		alphaSet := false
+		if s := req.GetString("alpha", ""); s != "" {
+			if v, err := strconv.ParseFloat(s, 64); err == nil && v >= 0 && v <= 1 {
+				alpha, alphaSet = v, true
+			}
+		}
 		// Experiment hook: turn the intent ranker off to measure what it
 		// actually contributes on repos we did not write.
 		skipIntent := req.GetBool("skip_intent", false)
@@ -239,6 +251,8 @@ func (s *Server) Serve(ctx context.Context) error {
 			MaxResults:         maxResults,
 			RerankK:            rerankK,
 			SeedK:              seedK,
+			Alpha:              float32(alpha),
+			AlphaSet:           alphaSet,
 			SkipIntent:         skipIntent,
 			PreserveFullBodies: preserveFullBodies,
 			AdaptiveRerank:     adaptiveRerank,
