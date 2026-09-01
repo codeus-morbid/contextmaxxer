@@ -358,7 +358,10 @@ func (s *Server) Serve(ctx context.Context) error {
 			if sr.Detail != "full" {
 				o.Detail = sr.Detail
 			}
-			if sr.Detail == "excerpt" {
+			// Both incomplete forms report what is visible. "compact" used to
+			// omit it, which left `lines` — the symbol's full extent — as the
+			// only span in the response, and that is not what was sent.
+			if sr.Detail == "excerpt" || sr.Detail == "compact" {
 				o.VisibleLines = visibleSpanText(sr)
 				o.OmittedBefore = sr.BodyStartLine - sr.StartLine
 				o.OmittedAfter = sr.EndLine - sr.BodyEndLine

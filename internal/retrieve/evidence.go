@@ -74,6 +74,13 @@ type evidenceJob struct {
 // untrimmed body is exactly what the cap exists to prevent.
 func applyEvidenceSpans(ctx context.Context, r *Retriever, query string, qvec []float32, results []ScoredResult) {
 	for i := range results {
+		// A compacted result already carries a signature line in place of its
+		// body, and the packer set its span to match. Resetting that span to the
+		// symbol's full extent — which this loop did to every result — republished
+		// eighty lines as visible when two were sent.
+		if results[i].Detail == "compact" {
+			continue
+		}
 		results[i].BodyStartLine = results[i].StartLine
 		results[i].BodyEndLine = results[i].EndLine
 		// DECISION(2026-08): the same guard the preserve-full-bodies path uses,

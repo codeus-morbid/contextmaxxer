@@ -31,3 +31,20 @@ func TestApplyEvidenceSpans_DegradedPathDoesNotClaimAFullBody(t *testing.T) {
 		"the reported range must match the lines actually shipped, not the symbol's full extent")
 	require.Equal(t, 100, results[0].BodyStartLine)
 }
+
+// The span a compacted result reports must survive evidence selection. That
+// loop reset every result to the symbol's full extent, which undid the packer
+// and re-announced eighty lines as visible when two were sent.
+func TestApplyEvidenceSpans_LeavesCompactedSpansAlone(t *testing.T) {
+	results := []ScoredResult{
+		{Detail: "compact", Body: "func Wide(x int) error", StartLine: 100, EndLine: 180, BodyStartLine: 100, BodyEndLine: 101},
+		{Detail: "full", Body: "func Top() {}", StartLine: 10, EndLine: 40, BodyStartLine: 10, BodyEndLine: 40},
+	}
+
+	// A nil embedder returns right after the loop under test.
+	applyEvidenceSpans(context.Background(), &Retriever{}, "query", nil, results)
+
+	require.Equal(t, 100, results[0].BodyStartLine)
+	require.Equal(t, 101, results[0].BodyEndLine, "the compacted span must not be widened back to the symbol")
+	require.Equal(t, 40, results[1].BodyEndLine, "a full result still spans its symbol")
+}
