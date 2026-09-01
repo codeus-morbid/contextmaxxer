@@ -207,12 +207,18 @@ func (s *Server) Serve(ctx context.Context) error {
 		// needs re-measuring rather than assuming.
 		preserveFullBodies := req.GetBool("preserve_full_bodies", false)
 		adaptiveRerank := req.GetBool("adaptive_rerank", s.options.AdaptiveRerank)
-		fullBodies := 0
-		// Session-aware compaction: deep into a
-		// session the default tightens to full body for the top result only.
-		callN := s.calls.Add(1)
-		if callN > sessionCompactAfter {
-			fullBodies = 1
+		// Experiment hook (0 = the session-aware default below, -1 = every result
+		// keeps its body). How many bodies travel is the single biggest lever on
+		// what the answer actually contains: the default sends three, so a
+		// twenty-result response is about sixty lines of code.
+		fullBodies := req.GetInt("full_body_results", 0)
+		if fullBodies == 0 {
+			// Session-aware compaction: deep into a
+			// session the default tightens to full body for the top result only.
+			callN := s.calls.Add(1)
+			if callN > sessionCompactAfter {
+				fullBodies = 1
+			}
 		}
 		// DECISION(2026-07): markdown is the default encoding — the payload is
 		// read by an LLM, and JSON spends ~25% of it on quotes/braces/escapes.

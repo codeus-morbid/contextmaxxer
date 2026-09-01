@@ -8,7 +8,18 @@ func estimateTokens(text string) int {
 
 // defaultFullBodyResults is how many top results keep their full body in the
 // packed response; lower-ranked results are compacted to signature+docstring.
-const defaultFullBodyResults = 3
+//
+// DECISION(2026-09): raised 3 -> 6 on a measured sweep over 387 SWE-Explore
+// instances at the benchmark's B=500 line budget. Six is not a compromise, it
+// DOMINATES three on both axes at once — precision 0.334 -> 0.338 and line
+// recall 0.034 -> 0.051 — because a default answer was only 62 lines of code
+// against a budget of 500, and the tool was starving the reader rather than
+// saving it anything. The real tradeoff starts after six: 12 bodies give
+// recall 0.076 at precision 0.308, and all twenty give 0.096 at 0.253.
+// ASSUMES: the reader's budget resembles the benchmark's 500 lines.
+// REVISIT IF: agents report the response crowding their context — the sweep is
+// cmd/exploreprobe -full, so this is one command to re-measure.
+const defaultFullBodyResults = 6
 
 // Pack preserves ranking order and selects symbols until budget is exhausted.
 // DECISION(2026-06): tiered packing — only the top fullBodyCount results carry
