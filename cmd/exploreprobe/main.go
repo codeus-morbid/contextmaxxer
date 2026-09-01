@@ -65,6 +65,9 @@ func main() {
 	budget := flag.Int("budget", 500, "line budget B: score the longest prefix whose visible lines fit (0 = no budget). The benchmark reports every baseline at B=500")
 	fullBodies := flag.Int("full", 0, "how many top results keep their full body (0 = served default of 3, -1 = all). The single biggest lever on how much code the answer contains")
 	rerankK := flag.Int("rerank", 0, "cross-encoder pool size (0 = served default 15). Below max_results the tail of the response is never reranked")
+	alpha := flag.String("alpha", "", "seed-vs-PageRank weight 0..1 (empty = served default; 1 = seeds only, which measures what the graph contributes)")
+	skipIntent := flag.Bool("skip-intent", false, "disable the symbolic intent ranker")
+	serverArgs := flag.String("server-args", "", "extra flags for the served mcp process, space separated, e.g. -reranker=none")
 	only := flag.String("only", "", "score just this instance_id. A distributed worker deletes each snapshot after scoring it, so without this the scorer would re-walk every index still on disk")
 	verbose := flag.Bool("v", false, "print every scored instance")
 	csvOut := flag.Bool("csv", false, "print one machine-readable row per instance instead of a summary. Runs split across machines must be merged from these rows: averaging each machine's summary weights small shards equally with large ones")
@@ -107,7 +110,11 @@ func main() {
 			continue
 		}
 
-		srv, err := evalharness.Start(*bin, indexPath)
+		var extra []string
+		if *serverArgs != "" {
+			extra = strings.Fields(*serverArgs)
+		}
+		srv, err := evalharness.Start(*bin, indexPath, extra...)
 		if err != nil {
 			errored++
 			fmt.Fprintf(os.Stderr, "%s: start: %v\n", inst.InstanceID, err)
@@ -118,6 +125,12 @@ func main() {
 		}
 		if *rerankK > 0 {
 			srv.SetRerankK(*rerankK)
+		}
+		if *alpha != "" {
+			srv.SetAlpha(*alpha)
+		}
+		if *skipIntent {
+			srv.SetSkipIntent(true)
 		}
 		res, err := srv.Find(inst.Query, *maxResults)
 		srv.Stop()

@@ -75,6 +75,7 @@ type Server struct {
 	seedK      int
 	fullBodies int
 	rerankK    int
+	alpha      string
 	skipIntent bool
 }
 
@@ -155,6 +156,10 @@ func (s *Server) SetFullBodies(n int) { s.fullBodies = n }
 // tail of a long response never reaches the reranker.
 func (s *Server) SetRerankK(k int) { s.rerankK = k }
 
+// SetAlpha sets the seed-vs-PageRank weight as a string ("" = served default,
+// "1" = seeds only, which measures what the graph contributes).
+func (s *Server) SetAlpha(a string) { s.alpha = a }
+
 // FindContext calls the find_context tool and returns ranked qualified names.
 func (s *Server) FindContext(query string, maxResults int) ([]string, error) {
 	res, err := s.Find(query, maxResults)
@@ -189,6 +194,9 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	if s.rerankK > 0 {
 		args["rerank_k"] = s.rerankK
+	}
+	if s.alpha != "" {
+		args["alpha"] = s.alpha
 	}
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
