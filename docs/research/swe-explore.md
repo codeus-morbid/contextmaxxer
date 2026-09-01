@@ -52,11 +52,15 @@ Baseline figures are the paper's, measured on all 848 instances; ours are on
 the 387 subset, so the comparison is indicative rather than like-for-like.
 
 Contextmaxxer is several times above every non-agentic method and level with
-CoSIL on file reach. [CoSIL](https://www.arxiv.org/abs/2503.22424v1) is the
-closest comparison in kind — it also works from a call graph — but it builds
-that graph on the fly through repeated LLM calls and indexes nothing, where
-this is one query against a prebuilt index with no model in the loop. The
-agents remain ahead on precision.
+CoSIL on file reach. [CoSIL](https://www.arxiv.org/abs/2503.22424v1) (ASE 2025)
+is the closest comparison in kind, because it localises from a call graph too.
+It builds that graph by static parsing, not by prompting, but puts the LLM
+*inside the search loop*: a module-level pass picks candidate files, then a
+function-level pass walks the function call graph for up to ten iterations with
+top-5 pruning, one model call per step. The graph is built per issue and
+nothing carries over to the next question. Here the cost is paid once at
+indexing time and a query needs no model at all. The agents remain ahead on
+precision.
 
 Line recall is the weak column, and the sweeps below explain why.
 
