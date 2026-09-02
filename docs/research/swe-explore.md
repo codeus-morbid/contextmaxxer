@@ -127,6 +127,49 @@ recall measure, so trading precision for reach is the wrong direction.
 A 500-line budget filled to 90 lines is therefore not an packing defect: there
 is nothing to add without paying precision for it.
 
+## What each stage of the pipeline is worth
+
+Five configurations over the same 438 instances, varying retrieval only — no
+reindexing, about fifteen minutes each.
+
+| Configuration | HitFile | HitRegion | Prec | Rec_l | F1 | Lines |
+|---|---:|---:|---:|---:|---:|---:|
+| **Full (served default)** | 0.531 | 0.367 | **0.342** | 0.051 | 0.076 | 89 |
+| No graph (`alpha=1`) | 0.529 | 0.362 | 0.322 | 0.051 | 0.075 | 94 |
+| No intent ranker | 0.531 | 0.366 | 0.327 | 0.046 | 0.072 | 86 |
+| No cross-encoder | 0.531 | **0.378** | 0.306 | **0.067** | **0.090** | 125 |
+| Neither graph nor rerank | 0.532 | 0.374 | 0.313 | 0.067 | 0.091 | 124 |
+
+**HitFile is 0.531 in every configuration.** Which files come back is decided
+entirely by the seeds — lexical plus vector. The graph, PageRank, the
+cross-encoder and the intent ranker add no file to the answer; they reorder
+what the seeds already found. The ceiling on reach is therefore a seed-stage
+property, and at 0.531 against Oracle's 0.923 that is where the headroom is.
+
+**Everything downstream of the seeds buys +0.029 precision.** Full system
+against bare seeds: 0.342 vs 0.313, while line recall is WORSE (0.051 vs 0.067)
+and so is F1. Per stage: cross-encoder +0.036, graph +0.020, intent ranker
++0.015, each paid for in coverage.
+
+**The cross-encoder is the most expensive stage and the most questionable
+one.** It also dominates query latency. Without it HitRegion, line recall and
+F1 all improve; only precision drops. Whether that trade is right depends on
+the paper's own finding that context efficiency correlates with downstream
+resolve rate at r = +0.950, above every recall measure — which argues for
+keeping it.
+
+One caveat keeps this from being a clean comparison: without reranking the
+response carries 125 lines instead of 89, because reranking changes which
+symbols occupy the six full-body slots and therefore how much code travels.
+Part of the recall gain is simply more text.
+
+**What this does not establish.** SWE-Explore queries are long issue reports,
+dense with the vocabulary of the code they describe — the case where lexical
+seeds are strongest. A short navigational query ("what runs when X happens")
+gives them far less to match on, and the graph may well weigh differently
+there. That has to be measured on agent-style traffic; it is not answered by
+this benchmark.
+
 ## Limits
 
 - **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
