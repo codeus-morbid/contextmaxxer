@@ -1,6 +1,6 @@
 # SWE-Explore: partial run
 
-**Status: interim. 438 of 848 instances (52%), not a full run.** These numbers
+**Status: interim. 493 of 848 instances (58%) indexed, 438 scored in the protocol table, not a full run.** These numbers
 are a research record, not a product claim, and the sample is biased in a way
 that matters — see [Limits](#limits) before quoting anything here.
 
@@ -169,6 +169,53 @@ seeds are strongest. A short navigational query ("what runs when X happens")
 gives them far less to match on, and the graph may well weigh differently
 there. That has to be measured on agent-style traffic; it is not answered by
 this benchmark.
+
+## Where the ceiling actually is
+
+Six levers left HitFile at ~0.53: the graph, the cross-encoder, the intent
+ranker, a 10x seed pool, a fine-tuned embedder, and query shaping. That called
+for a different question — not "how do we rank better" but "is the file even
+reachable". Two diagnostic runs answer it (budget off, reranker off, since
+HitFile is identical with and without reranking and a 500-line budget would
+truncate the response long before rank 200):
+
+| max_results | gold files found |
+|---:|---:|
+| 20 | 0.516 |
+| 200 | 0.647 |
+
+Then asking each index which gold files it physically contains gives the
+ceiling: **0.790** (1778 of 2251 gold files across 493 instances). Together
+those decompose the gap completely:
+
+| Layer | Share of gold files | Nature |
+|---|---:|---|
+| **Found today** (max_results=20) | **51.6%** | |
+| In the response but below rank 20 | 13.1% | depth of the returned list |
+| In the index, not retrieved even at rank 200 | **14.3%** | the real retrieval gap |
+| Test files, excluded by filename filter | **14.6%** | our own design decision |
+| Not code: configs, documentation | 5.4% | by construction |
+| Other (`target/` skip, generated, absent from snapshot) | 1.1% | known trade-offs |
+
+51.6 + 13.1 + 14.3 = 79.0, which is the measured ceiling.
+
+**The single largest loss is not weak retrieval — it is the test-file filter.**
+At 14.6% it costs more than any other cause. Include tests and the ceiling
+becomes 0.936, against Oracle's 0.923 in the paper. That agreement to the third
+decimal is unlikely to be coincidence: the benchmark's ground truth is what
+agents READ, and agents read tests, so its labels include them. Excluding tests
+is right for the product — an agent rarely wants one — and is a straight
+deduction here.
+
+**The retrieval work worth doing is the 14.3%**: files that sit in the index and
+are not retrieved even among two hundred results. Ranking cannot reach them and
+neither can a bigger candidate pool; only better similarity can.
+
+The indexer itself is clean. Of the code files missing from an index, only 0.6%
+of gold are actually present on disk, and every example checked had a reason:
+`tests/roots/test-ext-autodoc/target/*.py` sits under a directory named
+`target`, which is skipped as a build artifact (Rust, Maven); `_spec.rb` matches
+the test-name filter; `.pb.gw.go` is generated code.
 
 ## Limits
 
