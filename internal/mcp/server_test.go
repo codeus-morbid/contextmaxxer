@@ -36,6 +36,10 @@ func TestFindContextToolContractPreservesCompactDefaults(t *testing.T) {
 		"call continue_context",
 		"until status:complete",
 		"without rerunning semantic search",
+		// Query shape is the largest measured lever the caller controls: on 493
+		// SWE-Explore tasks a title beat the full issue report by 17% precision,
+		// more than the graph and the cross-encoder are worth combined.
+		"one sentence naming the mechanism",
 	} {
 		assert.True(t, strings.Contains(findContextToolDescription, fragment), "tool description missing %q", fragment)
 	}

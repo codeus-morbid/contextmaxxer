@@ -93,11 +93,22 @@ func RunHook(args []string) int {
 // 30-case gen corpus, agent-reformulated queries lifted Hit@1 0.70->0.83 and
 // Hit@3 0.90->1.00 over raw task phrasing; a longer 5-rule style guide added
 // nothing on top for a capable model (see memory/query-guide experiment).
+//
+// The "one sentence, not a pasted report" clause is measured too, on 493
+// SWE-Explore instances: searching an issue's TITLE instead of the whole report
+// gained +0.058 precision (+17%) and +36% line recall. Deleting text beat every
+// component of the pipeline — the graph is worth +0.020, the cross-encoder
+// +0.036. The opposite extreme is worse than either: stripping the query down
+// to bare identifiers dropped file reach from 0.515 to 0.434, because the
+// embedder needs a phrase, not a bag of names.
 const hookBlockMessage = "Use find_context first. This repository has a semantic code-search tool " +
 	"(the find_context MCP tool) that locates code in one call with caller/callee graph " +
 	"context — call it before grep/glob when you need to find code, understand how something " +
 	"works, or trace a call path. Phrase the query in the vocabulary the code would use " +
 	"(mechanism nouns/verbs, likely identifier words), one mechanism per query. " +
+	"Keep it to ONE SENTENCE: do not paste a whole issue, stack trace or log — " +
+	"that measurably costs 17% precision — and do not reduce it to bare identifiers either, " +
+	"which is worse still. Name the mechanism in a phrase. " +
 	"grep/glob become available after find_context for literal-string or filename " +
 	"searches. [Contextmaxxer discovery gate]"
 
