@@ -268,6 +268,27 @@ loop — which is exactly the cost this tool exists to avoid.
 **Seed pool size — no effect at all.** 20 -> 200 candidates per channel moved
 HitFile 0.531 -> 0.526. The pool was never the constraint.
 
+**Indexing test files — the largest reachable loss, and it changes nothing.**
+Tests are 14.6% of all gold files, the biggest single cause of unreachability,
+and including them would lift the ceiling from 0.790 to 0.936, next to Oracle's
+0.923. Measured on 30 snapshots chosen because their gold contains tests (21.0%
+of their gold files are tests), indexing them side by side with --include-tests:
+
+| | without tests | with tests |
+|---|---:|---:|
+| HitFile | 0.392 | 0.409 |
+| HitRegion | 0.269 | 0.286 |
+| Prec | 0.301 | 0.306 |
+
++0.018 HitFile, t = 1.39, 95% CI -0.007..+0.043 — not significant. Better on 2
+instances, worse on none, unchanged on 28. Precision did not fall, so the
+feared cost (test code competing lexically with implementation) did not
+materialise either.
+
+The ceiling rose by 21 points for this subset and the answer moved by under
+two. **Removing the largest cause of unreachability did not help, because what
+is retrieved is not limited by what is present.**
+
 ## Limits
 
 - **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
