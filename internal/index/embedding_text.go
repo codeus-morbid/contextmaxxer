@@ -20,6 +20,31 @@ const (
 // early tokens more and the symbol name carries the core semantics.
 // REVISIT IF: paraphrastic slice on the gen corpus does not improve vs v1.
 func EmbeddingText(filePath, language string, sym store.Symbol) string {
+	return EmbeddingTextWithNeighbors(filePath, language, sym, nil)
+}
+
+// embedNeighborMax caps how many graph neighbours join the text. A few names
+// add vocabulary; a long list would drown the symbol's own words, and hub
+// symbols have hundreds of neighbours.
+const embedNeighborMax = 8
+
+// EmbeddingTextWithNeighbors adds the names of the symbol's graph neighbours.
+//
+// DECISION(2026-09): the callers and callees of a symbol are free vocabulary
+// that the symbol's own text does not carry. `resize()` in image.js has nothing
+// to do with the word "avatar" until you notice that `uploadAvatar` calls it —
+// which is exactly the gap that makes an issue report fail to find the code it
+// describes. Measured on SWE-Explore, 14.3% of gold files sit in the index and
+// are never retrieved even at rank 200, and every attempt to reach them by
+// ranking, pool size or graph traversal failed; this attacks the same gap from
+// the indexing side, at no query cost and with no model.
+//
+// Only the backfill path can supply neighbours, because during the first index
+// pass the edges do not exist yet — embeddings are computed before the call
+// graph is extracted.
+// ASSUMES: neighbour names are more signal than noise at this cap.
+// REVISIT IF: hub symbols (high degree) get worse rather than better.
+func EmbeddingTextWithNeighbors(filePath, language string, sym store.Symbol, neighbors []string) string {
 	var b strings.Builder
 
 	if head := identifierWords(sym.QualifiedName); head != "" {
@@ -36,6 +61,26 @@ func EmbeddingText(filePath, language string, sym store.Symbol) string {
 	if sym.Docstring != "" {
 		b.WriteString(truncateField(sym.Docstring, embedDocstringMax))
 		b.WriteString("\n")
+	}
+
+	// Neighbour names ride in the natural-language head, before the structured
+	// fields, because the profile above assumes the embedder weights early
+	// tokens most.
+	if len(neighbors) > 0 {
+		var words []string
+		for _, n := range neighbors {
+			if len(words) >= embedNeighborMax {
+				break
+			}
+			if w := identifierWords(n); w != "" {
+				words = append(words, w)
+			}
+		}
+		if len(words) > 0 {
+			b.WriteString("related: ")
+			b.WriteString(strings.Join(words, ", "))
+			b.WriteString("\n")
+		}
 	}
 
 	writeField(&b, "symbol", sym.QualifiedName)
