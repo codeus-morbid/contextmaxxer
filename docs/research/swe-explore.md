@@ -289,6 +289,37 @@ The ceiling rose by 21 points for this subset and the answer moved by under
 two. **Removing the largest cause of unreachability did not help, because what
 is retrieved is not limited by what is present.**
 
+## What this benchmark does not measure
+
+SWE-Explore asks one question: given an issue report, name every region a
+solver had to read. That is adjacent to what this tool is for, and the
+difference shows up sharply when both are measured on the same day.
+
+`cmd/chainprobe` measures the other task — find a mechanism, then follow the
+call chain — over hand-traced chains on three repositories:
+
+| Repository | Hops | Arrived via graph | As a sibling result | Missed | Followable |
+|---|---:|---:|---:|---:|---:|
+| cockroach | 9 | 9 | 0 | 0 | **1.00** |
+| django | 13 | 10 | 1 | 2 | 0.85 |
+| postgres | 17 | 17 | 0 | 0 | **1.00** |
+| **total** | **39** | **36** | **1** | **2** | **0.95** |
+
+**Source retrieval is 1.000 on all three.** The queried symbol is found every
+time, against HitFile 0.53 here — and 36 of 39 next hops arrive attached to the
+previous answer, so the agent pays for no second search.
+
+So the ablation result above — "the graph adds no file to the answer" — is
+true of issue localization and false of navigation. On this benchmark the query
+is 850 characters of prose and lexical seeding already reaches what the graph
+would; on a short mechanism query the graph carries the chain outright. The two
+numbers are not in conflict, they are about different questions, and the gap
+between 1.000 and 0.53 is the same query-shape effect measured in the sweep
+above, in its extreme form.
+
+Read the tables here as what this tool costs and returns when handed a bug
+report, not as what it does when an agent navigates code.
+
 ## Limits
 
 - **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
