@@ -217,6 +217,57 @@ of gold are actually present on disk, and every example checked had a reason:
 `target`, which is skipped as a build artifact (Rust, Maven); `_spec.rb` matches
 the test-name filter; `.pb.gw.go` is generated code.
 
+## What was tried against the ceiling, and what it cost
+
+Every idea below was measured on the same instances, and all but one failed.
+They are recorded because the failures are informative: they say what kind of
+work can move this and what cannot.
+
+**Query shaping — the one that worked.** The benchmark hands over whole issue
+reports, ~850 characters of prose, reproduction steps and headings. Searching
+for the TITLE alone beats searching for all of it:
+
+| Query | HitFile | HitRegion | Prec | Rec_l | F1 |
+|---|---:|---:|---:|---:|---:|
+| raw issue | 0.515 | 0.356 | 0.334 | 0.050 | 0.075 |
+| **title** | 0.513 | 0.361 | **0.392** | **0.068** | **0.099** |
+| identifiers only | 0.434 | 0.299 | 0.301 | 0.052 | 0.077 |
+| title + identifiers | **0.520** | 0.361 | 0.380 | 0.063 | 0.094 |
+
++0.058 precision from deleting text, larger than any component of the pipeline
+is worth. Identifiers alone are worse than either: a bag of names loses the
+sentence the vector needs. Note this says nothing about reach — HitFile does
+not move.
+
+**A fine-tuned embedder — small and real.** ft2 over 108 snapshots in five
+languages: precision +0.031 (t = 2.30, 95% CI +0.005..+0.058), winning on 61
+and losing on 41. It buys about what the cross-encoder buys, and like
+everything else leaves HitFile alone (0.492 -> 0.494). Its three losses are the
+smallest corpora in the set, matching the earlier record that ft2 helps only on
+large ones.
+
+**Anchor expansion — failed, and the failure is the useful part.** Of the gold
+files we miss that ARE indexed, 64.5% sit one or two call-graph hops from a
+file we returned; LARGER reports this mechanism as its single largest gain.
+Four variants were measured:
+
+| Variant | HitFile | Prec |
+|---|---:|---:|
+| off | **0.497** | **0.354** |
+| neighbours added to the candidate pool | 0.499 | 0.309 |
+| anchored on fused candidates, 10 neighbours | 0.480 | 0.332 |
+| same, 20 neighbours | 0.466 | 0.316 |
+| requiring 2 anchors to agree | 0.502 | 0.334 |
+
+Monotonically worse as it widens. **Reachability is not discriminability**: an
+anchor has hundreds of neighbours, the gold file is among them, and a call
+graph offers nothing to tell them apart. Anchor agreement removes the harm and
+adds no benefit. LARGER resolves the choice with GPT-5.2 inside the search
+loop — which is exactly the cost this tool exists to avoid.
+
+**Seed pool size — no effect at all.** 20 -> 200 candidates per channel moved
+HitFile 0.531 -> 0.526. The pool was never the constraint.
+
 ## Limits
 
 - **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
