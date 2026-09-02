@@ -58,6 +58,7 @@ type instance struct {
 func main() {
 	manifestPath := flag.String("manifest", "manifest.jsonl", "instances joined with their queries and gold")
 	reposDir := flag.String("repos", "repos", "directory of extracted snapshots, one per instance_id")
+	indexName := flag.String("index-name", "index.db", "index filename inside each snapshot .contextmaxxer dir; lets a second index (say, one built with another embedder) sit beside the first")
 	bin := flag.String("bin", "dist/contextmaxxer.exe", "served binary under test")
 	n := flag.Int("n", 0, "score at most this many instances (0 = all indexed ones)")
 	dataset := flag.String("dataset", "", "restrict to one sub-dataset: verified|multilingual|pro")
@@ -67,8 +68,12 @@ func main() {
 	rerankK := flag.Int("rerank", 0, "cross-encoder pool size (0 = served default 15). Below max_results the tail of the response is never reranked")
 	alpha := flag.String("alpha", "", "seed-vs-PageRank weight 0..1 (empty = served default; 1 = seeds only, which measures what the graph contributes)")
 	skipIntent := flag.Bool("skip-intent", false, "disable the symbolic intent ranker")
+	seedK := flag.Int("seed", 0, "seed candidates per channel before fusion (0 = pipeline default 20). The seed pool is the hard ceiling on reach: nothing downstream can return a file the seeds did not find")
 	serverArgs := flag.String("server-args", "", "extra flags for the served mcp process, space separated, e.g. -reranker=none")
 	only := flag.String("only", "", "score just this instance_id. A distributed worker deletes each snapshot after scoring it, so without this the scorer would re-walk every index still on disk")
+	queryMode := flag.String("query-mode", "raw", "what to search for: raw (the whole issue report), title, ids (code identifiers), title+ids. Every ablation left HitFile unmoved, so the query itself is the untested stage")
+	anchorExpand := flag.Int("anchor-expand", 0, "add this many 1-hop graph neighbours of the top seeds to the candidate pool (0 = off). 64.5%% of missed gold that IS indexed sits within 1-2 hops of something we returned")
+	dumpFiles := flag.Bool("dump-files", false, "print instance, returned files and gold files as TSV, for offline analysis of what was missed")
 	verbose := flag.Bool("v", false, "print every scored instance")
 	csvOut := flag.Bool("csv", false, "print one machine-readable row per instance instead of a summary. Runs split across machines must be merged from these rows: averaging each machine's summary weights small shards equally with large ones")
 	flag.Parse()
@@ -87,7 +92,7 @@ func main() {
 		sumFUH                                 float64
 		fuhCount                               int
 		sumHitRegion, sumF1, sumNDCGB          float64
-		sumKept, sumShown                      int
+		sumKept, sumShown, sumUnique           int
 	)
 
 	for _, inst := range instances {
@@ -102,7 +107,7 @@ func main() {
 			continue
 		}
 		repoRoot := filepath.Join(*reposDir, inst.InstanceID)
-		indexPath := filepath.Join(repoRoot, ".contextmaxxer", "index.db")
+		indexPath := filepath.Join(repoRoot, ".contextmaxxer", *indexName)
 		if _, err := os.Stat(indexPath); err != nil {
 			// Indexing 847 snapshots is hours of GPU; scoring whatever is
 			// already indexed keeps this runnable on a subset.
@@ -132,7 +137,13 @@ func main() {
 		if *skipIntent {
 			srv.SetSkipIntent(true)
 		}
-		res, err := srv.Find(inst.Query, *maxResults)
+		if *seedK > 0 {
+			srv.SetSeedK(*seedK)
+		}
+		if *anchorExpand > 0 {
+			srv.SetAnchorExpand(*anchorExpand)
+		}
+		res, err := srv.Find(shapeQuery(inst.Query, *queryMode), *maxResults)
 		srv.Stop()
 		if err != nil {
 			errored++
@@ -156,6 +167,21 @@ func main() {
 		sumNDCGB += m.ndcgB
 		sumKept += m.kept
 		sumShown += m.shownLines
+		sumUnique += m.uniqueFiles
+		if *dumpFiles {
+			// instance <TAB> returned files <TAB> gold files. Enough to ask,
+			// offline, whether a missed gold file was reachable through the graph
+			// from something we did return.
+			returned := make([]string, 0, m.kept)
+			for i := 0; i < m.kept && i < len(res.Files); i++ {
+				returned = append(returned, normPath(res.Files[i]))
+			}
+			gold := make([]string, 0, len(inst.GoldFiles))
+			for _, g := range inst.GoldFiles {
+				gold = append(gold, normPath(g))
+			}
+			fmt.Printf("%s\t%s\t%s\n", inst.InstanceID, strings.Join(returned, ","), strings.Join(gold, ","))
+		}
 		switch {
 		case *csvOut:
 			fmt.Printf("%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%d,%d\n",
@@ -204,6 +230,8 @@ func main() {
 		sumHitRegion/f, sumEfficiency/f, sumLineRecall/f, sumF1/f, sumFileRecall/f, *budget, sumNDCGB/f)
 	fmt.Printf("kept %.1f of %d results per instance, %.0f visible lines on average\n",
 		float64(sumKept)/f, *maxResults, float64(sumShown)/f)
+	fmt.Printf("distinct files %.1f of %.1f results — the rest are further symbols from a file already in the list\n",
+		float64(sumUnique)/f, float64(sumKept)/f)
 	fmt.Println("nDCG is our reading of their formula; Prec/Rec/HitFile are unambiguous.")
 }
 
@@ -215,6 +243,7 @@ type metrics struct {
 	// The benchmark's own protocol, computed over the in-budget prefix.
 	hitRegion, f1, ndcgB float64
 	kept, shownLines     int
+	uniqueFiles          int
 }
 
 // score turns one response into the benchmark's metrics. Line-level numbers use
@@ -237,6 +266,15 @@ func scoreWithBudget(inst instance, res evalharness.Result, budget int) metrics 
 	cut := budgetPrefix(res, budget)
 	var m metrics
 	m.kept = cut
+	// How many DISTINCT files the returned symbols cover. The response ranks
+	// symbols, but the benchmark scores files, so several results landing in one
+	// file spend the list without widening reach — and that is the difference
+	// between "rank better" and "diversify".
+	distinct := map[string]bool{}
+	for i := 0; i < cut; i++ {
+		distinct[normPath(res.Files[i])] = true
+	}
+	m.uniqueFiles = len(distinct)
 	seen := map[string]bool{}
 	var rels []float64
 	for i, file := range res.Files[:cut] {

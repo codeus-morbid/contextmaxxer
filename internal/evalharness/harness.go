@@ -74,6 +74,7 @@ type Server struct {
 	seq        int
 	seedK      int
 	fullBodies int
+	anchorExp  int
 	rerankK    int
 	alpha      string
 	skipIntent bool
@@ -149,6 +150,9 @@ func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
 // subsequent call on this server (experiment knob; 0 = server default).
 func (s *Server) SetSeedK(k int) { s.seedK = k }
 
+// SetAnchorExpand adds graph neighbours of the top seeds to the candidate pool.
+func (s *Server) SetAnchorExpand(n int) { s.anchorExp = n }
+
 // SetFullBodies controls how many top results keep their full body (-1 = all).
 func (s *Server) SetFullBodies(n int) { s.fullBodies = n }
 
@@ -200,6 +204,9 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
+	}
+	if s.anchorExp > 0 {
+		args["anchor_expand"] = s.anchorExp
 	}
 	if s.skipIntent {
 		args["skip_intent"] = true

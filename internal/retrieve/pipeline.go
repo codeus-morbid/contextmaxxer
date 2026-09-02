@@ -329,6 +329,10 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 
 	scored = rerankAndRank(ctx, r, req, scored, &stats)
 
+	if req.AnchorExpand > 0 && len(fused.anchors) > 0 {
+		scored = reserveAnchorSlots(scored, fused.anchors, req.MaxResults, anchorSlotShare)
+	}
+
 	if len(scored) > req.MaxResults {
 		scored = scored[:req.MaxResults]
 	}
@@ -1077,8 +1081,8 @@ func appendMissingTopPPR(topIDs []int64, pprIDsByRank []int64, protectCount int)
 // neighbors of the top-K vector seeds. Targets multi-hop scenarios where the
 // expected sibling functions are call-graph-connected to a strong vector seed
 // but didn't surface via PPR (which favors hub nodes).
-func appendVectorSeedGraphNeighbors(topIDs []int64, vSeeds []store.ScoredSymbol, edges []store.Edge, topSeedK, protectCount int) []int64 {
-	if protectCount <= 0 || len(vSeeds) == 0 || len(edges) == 0 {
+func appendVectorSeedGraphNeighbors(topIDs []int64, vSeeds []store.ScoredSymbol, g *Graph, ranks map[int64]float32, topSeedK, protectCount int) []int64 {
+	if protectCount <= 0 || len(vSeeds) == 0 || g == nil || g.NumNodes == 0 {
 		return topIDs
 	}
 	if topSeedK > len(vSeeds) {
@@ -1088,32 +1092,76 @@ func appendVectorSeedGraphNeighbors(topIDs []int64, vSeeds []store.ScoredSymbol,
 	for i := 0; i < topSeedK; i++ {
 		seedSet[vSeeds[i].ID] = true
 	}
-	// Collect 1-hop neighbors (both directions) of top vector seeds.
-	neighborSet := make(map[int64]bool)
-	for _, e := range edges {
-		if seedSet[e.Src] {
-			neighborSet[e.Dst] = true
+	// 1-hop neighbours of the anchors, counted by HOW MANY anchors reach them.
+	// The graph is already built with both directions per edge (see the DECISION
+	// on Graph), so one pass over OutEdges covers callers and callees alike.
+	//
+	// The count is the selection signal. Ranking neighbours by PageRank alone
+	// made things monotonically worse (HitFile 0.497 -> 0.480 -> 0.466 as the
+	// expansion widened): an anchor has hundreds of neighbours, the gold file is
+	// among them, and nothing distinguishes it — so twenty neighbours arrive,
+	// one may help and nineteen displace good results. A symbol several anchors
+	// agree on is a narrower claim than a symbol one anchor happens to touch.
+	neighborHits := make(map[int64]int)
+	for i := 0; i < topSeedK; i++ {
+		idx, ok := g.NodeIdx[vSeeds[i].ID]
+		if !ok {
+			continue
 		}
-		if seedSet[e.Dst] {
-			neighborSet[e.Src] = true
+		for _, nIdx := range g.OutEdges[idx] {
+			neighborHits[g.NodeIDs[nIdx]]++
 		}
+	}
+	neighborSet := make(map[int64]bool, len(neighborHits))
+	for id := range neighborHits {
+		neighborSet[id] = true
 	}
 	seen := make(map[int64]bool, len(topIDs)+protectCount)
 	for _, id := range topIDs {
 		seen[id] = true
 	}
-	out := append([]int64(nil), topIDs...)
-	added := 0
+	// Iterating the map directly picked an arbitrary subset on every call, so the
+	// same query could return different candidates run to run.
+	//
+	// Sorting by id alone made it reproducible and still arbitrary — an anchor
+	// can have hundreds of neighbours, and "lowest id" is not a reason to prefer
+	// one. Ranking them by PageRank picks the neighbours the graph itself
+	// considers central, which is the signal the expansion exists to use.
+	neighbors := make([]int64, 0, len(neighborSet))
 	for nid := range neighborSet {
-		if added >= protectCount {
-			break
+		if !seen[nid] && !seedSet[nid] {
+			neighbors = append(neighbors, nid)
 		}
-		if seen[nid] || seedSet[nid] {
-			continue
+	}
+	sort.Slice(neighbors, func(i, j int) bool {
+		// Agreement between anchors first, PageRank as the tiebreak.
+		if neighborHits[neighbors[i]] != neighborHits[neighbors[j]] {
+			return neighborHits[neighbors[i]] > neighborHits[neighbors[j]]
+		}
+		if ranks[neighbors[i]] != ranks[neighbors[j]] {
+			return ranks[neighbors[i]] > ranks[neighbors[j]]
+		}
+		return neighbors[i] < neighbors[j]
+	})
+	// A neighbour only one anchor touches is not a claim worth displacing a
+	// ranked result for.
+	if minAnchorAgreement > 1 {
+		kept := neighbors[:0]
+		for _, id := range neighbors {
+			if neighborHits[id] >= minAnchorAgreement {
+				kept = append(kept, id)
+			}
+		}
+		neighbors = kept
+	}
+
+	out := append([]int64(nil), topIDs...)
+	for _, nid := range neighbors {
+		if len(out)-len(topIDs) >= protectCount {
+			break
 		}
 		out = append(out, nid)
 		seen[nid] = true
-		added++
 	}
 	return out
 }

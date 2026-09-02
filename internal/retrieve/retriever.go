@@ -255,11 +255,14 @@ func NewRetrieverWithRankers(s Store, e Embedder, reranker Reranker, ranker Rank
 }
 
 type Request struct {
-	Query          string
-	BudgetTokens   int
-	SeedK          int
-	MaxResults     int
-	RerankK        int
+	Query        string
+	BudgetTokens int
+	SeedK        int
+	MaxResults   int
+	RerankK      int
+	// AnchorExpand adds this many 1-hop graph neighbours of the top seeds to the
+	// candidate pool (0 = off).
+	AnchorExpand   int
 	AdaptiveRerank bool
 	// LazyRerank inverts the reranking default: the cross-encoder runs only
 	// when the fused ranking is ambiguous (small gap / several near-ties),

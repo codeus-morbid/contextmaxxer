@@ -445,3 +445,51 @@ declare module "m" {
 	require.Equal(t, store.KindFunction, got["apply"], "declare namespace: %+v", got)
 	require.Equal(t, store.KindFunction, got["g"], "declare module: %+v", got)
 }
+
+// React expresses composition as JSX, not as calls, so the component graph is
+// invisible to a call query. Worked out by hand: Toolbar renders Panel and
+// Button — two edges — while <div> is an intrinsic element naming nothing.
+func TestExtractor_JSXCompositionProducesEdges(t *testing.T) {
+	ext, _ := New("tsx")
+	source := []byte(`
+export function Toolbar({ onSave }) {
+	return (
+		<Panel title="x">
+			<Button onClick={onSave} />
+			<div className="spacer" />
+		</Panel>
+	);
+}
+
+export function Panel(props) { return null; }
+export function Button(props) { return null; }
+`)
+	tree := NewTSXParser().Parse(source, nil)
+
+	nameToID := map[string]int64{}
+	for i, s := range ext.Symbols(tree, source) {
+		nameToID[s.QualifiedName] = int64(i + 1)
+	}
+	require.NotZero(t, nameToID["Toolbar"], "symbols: %+v", nameToID)
+
+	// The literal opens with a newline, so <Panel> is line 4 and <Button> line 5.
+	requireEdge(t, ext.Edges(tree, source, nameToID), nameToID["Toolbar"], nameToID["Panel"], 4)
+	requireEdge(t, ext.Edges(tree, source, nameToID), nameToID["Toolbar"], nameToID["Button"], 5)
+
+	// A project CAN define a symbol called "div"; the intrinsic tag must still be
+	// refused. Without the capitalisation filter this edge would appear, so this
+	// is what separates having the filter from not having it.
+	nameToID["div"] = 99
+	requireNoEdge(t, ext.Edges(tree, source, nameToID), nameToID["Toolbar"], 99)
+}
+
+// The JSX pattern must not reach the TypeScript grammar, which has no such
+// nodes: a query that fails to compile returns no edges at all, which would
+// silently disable call edges for every .ts file.
+func TestExtractor_PlainTypeScriptStillProducesCallEdges(t *testing.T) {
+	ext, _ := New("typescript")
+	source := []byte("function helper(): void {}\nfunction run(): void { helper(); }\n")
+	tree := NewTSParser().Parse(source, nil)
+
+	requireEdge(t, ext.Edges(tree, source, map[string]int64{"helper": 1, "run": 2}), 2, 1, 2)
+}

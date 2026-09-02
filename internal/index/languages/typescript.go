@@ -371,8 +371,11 @@ func (e *tsExtractor) Edges(tree *tree_sitter.Tree, source []byte, nameToID map[
 	// `this.method()` can resolve by the field's DECLARED TS type (the DI pattern)
 	// instead of a fuzzy global name match — TS writes the type in the source, so
 	// no inference is needed.
-	q, qErr := tree_sitter.NewQuery(lang,
-		`(call_expression function: [(identifier) @fn (member_expression object: (_) @recv property: (property_identifier) @fn)])`)
+	pattern := `(call_expression function: [(identifier) @fn (member_expression object: (_) @recv property: (property_identifier) @fn)])`
+	if e.tsx {
+		pattern += jsxCallPattern
+	}
+	q, qErr := tree_sitter.NewQuery(lang, pattern)
 	if qErr != nil {
 		return nil
 	}
@@ -519,6 +522,18 @@ func tsExtractCallsInFunc(node *tree_sitter.Node, source []byte, q *tree_sitter.
 			continue
 		}
 		callee := nodeText(fnNode, source)
+		// A JSX tag is only a component reference when it is capitalised; `<div>`
+		// and `<span>` are intrinsic elements and name nothing in this index.
+		// The check is scoped to JSX parents so an ordinary lowercase call like
+		// `helper()` is untouched.
+		if p := fnNode.Parent(); p != nil {
+			switch p.Kind() {
+			case "jsx_opening_element", "jsx_self_closing_element":
+				if !isJSXComponentName(callee) {
+					continue
+				}
+			}
+		}
 		callLine := int(fnNode.StartPosition().Row) + 1
 
 		key := callee
@@ -774,4 +789,34 @@ func tsIsImportBinding(value *tree_sitter.Node, source []byte) bool {
 	}
 	fn := value.ChildByFieldName("function")
 	return fn != nil && fn.Kind() == "identifier" && nodeText(fn, source) == "require"
+}
+
+// jsxCallPattern adds JSX composition to the call query for TSX trees.
+//
+// DECISION(2026-09): in a React codebase the call graph is nearly empty because
+// the composition is not expressed as calls. Measured on protonmail/webclients:
+// 0.08 edges per symbol against 1.26 for tutanota, which is TypeScript too but
+// object-oriented — and the gap is not JSX-specific files (its plain .ts is
+// 0.091), it is the paradigm. Functional React connects through props and
+// element composition, not named calls.
+//
+// `<Button />` compiles to React.createElement(Button), so treating it as a
+// call is not a metaphor. The edges are emitted as "calls" for that reason, and
+// so the whole pipeline — PageRank, callers/callees in the response — works on
+// them unchanged.
+// ASSUMES: the React convention that components are capitalised and intrinsic
+// elements (div, span) are not; that filter is what keeps HTML tags out.
+// REVISIT IF: a codebase lowercases its components.
+const jsxCallPattern = `
+(jsx_opening_element name: (identifier) @fn)
+(jsx_self_closing_element name: (identifier) @fn)`
+
+// isJSXComponentName reports whether a JSX tag names a component rather than an
+// intrinsic HTML element.
+func isJSXComponentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	r := rune(name[0])
+	return r >= 'A' && r <= 'Z'
 }

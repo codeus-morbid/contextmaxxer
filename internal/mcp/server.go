@@ -199,6 +199,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		// ceiling on what any ranking can reach, and its size was calibrated on
 		// repos ~30x smaller than the largest indexes we now serve.
 		seedK := req.GetInt("seed_k", 0)
+		// Experiment hook: add this many 1-hop graph neighbours of the top seeds
+		// to the candidate pool. Measured motivation is in fusion.go.
+		anchorExpand := req.GetInt("anchor_expand", 0)
 		// Experiment hook: the weight between lexical/vector seeds and
 		// personalized PageRank. 1.0 is seeds only, which is how much of the
 		// answer the graph is responsible for — a question the observational
@@ -251,6 +254,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			MaxResults:         maxResults,
 			RerankK:            rerankK,
 			SeedK:              seedK,
+			AnchorExpand:       anchorExpand,
 			Alpha:              float32(alpha),
 			AlphaSet:           alphaSet,
 			SkipIntent:         skipIntent,
