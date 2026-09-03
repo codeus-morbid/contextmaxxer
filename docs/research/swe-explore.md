@@ -1,6 +1,6 @@
-# SWE-Explore: partial run
+# SWE-Explore
 
-**Status: interim. 493 of 848 instances (58%) indexed, 438 scored in the protocol table, not a full run.** These numbers
+**Status: 689 of 848 instances (81%). Two of the three sub-datasets are COMPLETE — pro (215/215) and multilingual (182/182); verified is 292 of 451, and every one of the 159 missing instances is django.** These numbers
 are a research record, not a product claim, and the sample is biased in a way
 that matters — see [Limits](#limits) before quoting anything here.
 
@@ -38,17 +38,19 @@ other four metrics are unambiguous and are not hedged.
 
 ## Results
 
-438 instances (52% of the benchmark), B = 500, served defaults:
+689 instances (81% of the benchmark), B = 500, served defaults:
 
 | | **Contextmaxxer** | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| HitFile | **0.531** | 0.079 | 0.140 | 0.088 | 0.544 | 0.667 | 0.923 |
-| Prec | **0.342** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
-| Rec_l | **0.051** | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
-| HitRegion | **0.367** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
+| HitFile | **0.509** | 0.079 | 0.140 | 0.088 | 0.544 | 0.667 | 0.923 |
+| Prec | **0.340** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
+| Rec_l | **0.048** | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
+| HitRegion | **0.359** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
 
 Baseline figures are the paper's, measured on all 848 instances; ours are on
-the 438 subset, so the comparison is indicative rather than like-for-like.
+the 689 subset. For pro and multilingual that is now the whole sub-dataset;
+verified is missing 159 django instances, so the overall comparison is close to
+but not yet exactly like-for-like.
 
 Contextmaxxer is several times above every non-agentic method and level with
 CoSIL on file reach. [CoSIL](https://www.arxiv.org/abs/2503.22424v1) (ASE 2025)
@@ -63,6 +65,24 @@ precision.
 
 Line recall is the weak column, and the sweeps below explain why.
 
+### By sub-dataset
+
+| Sub-dataset | Scored | Of | HitFile | Prec |
+|---|---:|---:|---:|---:|
+| **pro** | 215 | **215 (all)** | 0.426 | 0.340 |
+| **multilingual** | 182 | **182 (all)** | 0.513 | 0.239 |
+| verified | 292 | 451 | 0.569 | 0.402 |
+
+`pro` is the hardest set by some way, and `multilingual` costs the most
+precision — consistent with the per-language pattern below, since that is where
+the non-Python repositories are.
+
+The numbers are stable as the sample grows, which is the reason to trust them:
+387 instances gave HitFile 0.522, 438 gave 0.531, and 689 give 0.509, while
+precision moved 0.338 -> 0.342 -> 0.340 across the same span. The 159 django
+instances still missing are unlikely to change the picture; they are needed to
+remove the caveat, not to find the answer.
+
 ### Per repository, and a guess that did not survive
 
 An earlier version of this note guessed that the subset understated the tool,
@@ -74,24 +94,32 @@ and the guess did not hold.**
 | Repository | Language | n | HitFile | HitRegion | Prec |
 |---|---|---:|---:|---:|---:|
 | scikit-learn | Python | 31 | 0.651 | **0.568** | **0.556** |
-| requests | Python | 8 | 0.638 | 0.462 | 0.457 |
-| astropy | Python | 21 | 0.552 | 0.458 | 0.401 |
+| matplotlib | Python | 30 | 0.640 | 0.532 | 0.444 |
 | xarray | Python | 18 | 0.625 | 0.449 | 0.380 |
 | django | Python | 50 | 0.600 | 0.399 | 0.373 |
-| sphinx | Python | 37 | 0.504 | 0.395 | 0.366 |
+| astropy | Python | 21 | 0.552 | 0.458 | 0.401 |
 | vuls | Go | 21 | 0.546 | 0.327 | 0.351 |
+| ansible | Python | 41 | 0.537 | 0.323 | 0.435 |
+| sphinx | Python | 37 | 0.504 | 0.395 | 0.366 |
+| sympy | Python | 66 | 0.497 | 0.412 | 0.406 |
+| pytest | Python | 18 | 0.470 | 0.408 | 0.327 |
 | qutebrowser | Python | 34 | 0.439 | 0.318 | 0.404 |
 | NodeBB | JavaScript | 22 | 0.388 | 0.292 | 0.329 |
 | openlibrary | Python | 21 | 0.381 | 0.218 | 0.186 |
-| preact | JavaScript | 11 | 0.458 | 0.209 | 0.084 |
-| navidrome | Go | 12 | 0.334 | 0.186 | 0.345 |
+| teleport | Go | 19 | 0.363 | 0.207 | 0.203 |
+
+Repositories with fewer than 15 instances are omitted from the table as too
+small to read; `requests` (n=8) sits at 0.639 HitFile on 35 code files, and
+`preact` (n=11) at 0.458 with precision 0.084 — still the worst in the set even
+after three extractor fixes.
 
 django lands mid-table, above the overall average but well below scikit-learn,
-which is a third its size — and `requests`, at 35 code files, scores higher
-still. Corpus size is not the driver. Language looks like the stronger signal:
-the whole top half is Python, and both JavaScript repositories sit at the
-bottom, with preact still worst on precision (0.084) and first-useful-hit (6.7)
-even after three extractor fixes.
+which is a third its size, and below `requests` at a fiftieth of it. Corpus
+size is not the driver. Language is the stronger signal: the top of the table
+is Python throughout, and the JavaScript repositories sit at the bottom. Go is
+split — vuls at 0.546 against teleport at 0.363 — which suggests the language
+label is itself a proxy for something narrower, most likely how much of the
+codebase is expressed as named calls rather than dispatch or composition.
 
 ## What the sweeps established
 
@@ -322,8 +350,8 @@ report, not as what it does when an agent navigates code.
 
 ## Limits
 
-- **52% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
-  django alone would be 209 instances and ~24 hours of it, of which 50 were run.
+- **81% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
+  the 159 instances still missing are all django, ~24 hours on one GPU.
 - **The subset over-represents Python**, which is also where the tool scores
   best, so the overall averages are probably flattered rather than understated.
   sympy and ansible are still absent. (The earlier worry ran the other way —
