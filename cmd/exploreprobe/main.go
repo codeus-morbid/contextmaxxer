@@ -190,10 +190,10 @@ func main() {
 		}
 		switch {
 		case *csvOut:
-			fmt.Printf("%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%d,%d\n",
+			fmt.Printf("%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%d,%d,%s,%.4f\n",
 				inst.InstanceID, inst.Dataset, inst.Repo,
 				m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency,
-				m.fuh, m.hitRegion, m.f1, m.ndcgB, m.kept, m.shownLines)
+				m.fuh, m.hitRegion, m.f1, m.ndcgB, m.kept, m.shownLines, m.confidence, m.topGap)
 		case *verbose:
 			fmt.Printf("%-52s hit=%.0f fileR=%.2f ndcg=%.2f lineR=%.2f eff=%.2f fuh=%d kept=%d lines=%d\n",
 				inst.InstanceID, m.hitFile, m.fileRecall, m.ndcg, m.lineRecall, m.efficiency, m.fuh, m.kept, m.shownLines)
@@ -203,7 +203,7 @@ func main() {
 	if *csvOut {
 		// The header goes last so the rows can be concatenated across machines
 		// without stripping anything; it is a comment line.
-		fmt.Fprintln(os.Stderr, "#instance_id,dataset,repo,hit,file_recall,ndcg,line_recall,efficiency,fuh,hit_region,f1,ndcg_b,kept,lines")
+		fmt.Fprintln(os.Stderr, "#instance_id,dataset,repo,hit,file_recall,ndcg,line_recall,efficiency,fuh,hit_region,f1,ndcg_b,kept,lines,confidence,top_gap")
 		return
 	}
 
@@ -261,6 +261,8 @@ type metrics struct {
 	// goldViaRefs is gold reachable from ONE call: results plus what their graph
 	// refs point at. completeInOneCall means no second search is needed at all.
 	goldViaRefs       float64
+	confidence        string
+	topGap            float32
 	completeInOneCall bool
 }
 
@@ -370,6 +372,8 @@ func scoreWithBudget(inst instance, res evalharness.Result, budget int) metrics 
 			m.f1 = 2 * m.efficiency * m.lineRecall / (m.efficiency + m.lineRecall)
 		}
 	}
+	m.confidence = res.Confidence
+	m.topGap = res.TopGap
 	m.hitRegion = hitRegion(inst, res, cut)
 	m.ndcgB = ndcgBudget(inst, res, cut, budget)
 	return m

@@ -348,6 +348,51 @@ above, in its extreme form.
 Read the tables here as what this tool costs and returns when handed a bug
 report, not as what it does when an agent navigates code.
 
+## The boundary, stated
+
+Six independent attempts to lift reach, all measured on the same instances, all
+null. They are worth listing together because the pattern is the finding:
+
+| Attempt | Δ HitFile | Verdict |
+|---|---:|---|
+| Seed pool 20 -> 200 | -0.005 | pool was never the constraint |
+| Anchor expansion over the graph | -0.031 | monotonically worse as it widens |
+| Fine-tuned embedder (ft2) | +0.002 | +0.031 precision, no reach |
+| Indexing test files | +0.018 | t = 1.39, ceiling +21pp and answer +1.8pp |
+| Graph context in embedded text | -0.010 | better on 0 of 30 instances |
+| Confidence-gated escalation | — | **no signal to gate on** |
+
+The last one closes the most promising route. Escalating to a model only on
+uncertain queries would preserve the product's premise — no model at query
+time, most of the time — but it needs the server to know when it is wrong, and
+it does not:
+
+- Queries the server answers **confidently score 0.505**; ones it flags as
+  uncertain score **0.510**. Confidence is anti-correlated with being right, by
+  a hair.
+- `high` and `medium` never occurred at all across 689 instances: on issue text
+  the system is always "unsure", which makes the scale meaningless.
+- The continuous form is barely better: the top1-top2 score gap correlates with
+  file recall at **r = 0.109**, and 67% of queries fall in the lowest bucket, so
+  "escalate when unsure" would escalate two thirds of all traffic.
+
+That confirms at n=689 what a smaller earlier measurement had recorded as false
+confidence between 0.42 and 0.67.
+
+**Where the boundary actually is.** Reach is a property of the seed stage —
+HitFile is 0.531 with the graph, the cross-encoder and the intent ranker all
+disabled, the same as with everything on. It is not ranking, and it is not
+pool size. 14.3% of gold sits in the index and is never retrieved at rank 200,
+because vector and lexical similarity cannot separate those files from
+plausible neighbours. Nothing local moves that: the methods that do (LARGER,
+CoSIL) put an LLM inside the search loop, which is the cost this tool exists to
+avoid.
+
+**What that does not mean.** The same graph that adds nothing here carries 0.95
+of hops on navigation, and source retrieval there is 1.000. The boundary is
+specific to answering an 850-character bug report in one shot, which is not the
+job this tool was built for.
+
 ## Limits
 
 - **81% of the benchmark.** Indexing all 847 snapshots is 48-64 hours of GPU;
