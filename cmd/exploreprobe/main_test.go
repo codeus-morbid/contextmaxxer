@@ -257,3 +257,57 @@ func TestScoreWithBudget_ZeroMeansUnlimited(t *testing.T) {
 	}
 	close(t, m.lineRecall, 1, "recall")
 }
+
+// Saved calls: a graph ref puts a file within reach without a second search, so
+// gold reached through refs counts. Worked out by hand: gold is a.go, b.go and
+// c.go; the response returns a.go and d.go, and a.go's refs point at b.go. So
+// two of three gold files are within reach, and the task is NOT complete in one
+// call because c.go is nowhere.
+func TestScore_GoldReachedThroughGraphRefs(t *testing.T) {
+	inst := instance{GoldFiles: []string{"a.go", "b.go", "c.go"}}
+	res := evalharness.Result{
+		Files:    []string{"a.go", "d.go"},
+		Visible:  []string{"1-5", "1-5"},
+		RefFiles: [][]string{{"b.go"}, nil},
+	}
+
+	m := scoreWithBudget(inst, res, 0)
+	close(t, m.fileRecall, 1.0/3.0, "only a.go was returned outright")
+	close(t, m.goldViaRefs, 2.0/3.0, "b.go arrives through a ref")
+	if m.completeInOneCall {
+		t.Fatal("c.go is unreachable, so a second search is still needed")
+	}
+}
+
+// When refs close the gap entirely, the task needs no second search.
+func TestScore_CompleteInOneCallWhenRefsCoverTheRest(t *testing.T) {
+	inst := instance{GoldFiles: []string{"a.go", "b.go"}}
+	res := evalharness.Result{
+		Files:    []string{"a.go"},
+		Visible:  []string{"1-5"},
+		RefFiles: [][]string{{"b.go"}},
+	}
+
+	m := scoreWithBudget(inst, res, 0)
+	close(t, m.goldViaRefs, 1, "both gold files are within reach")
+	if !m.completeInOneCall {
+		t.Fatal("expected the task to be complete in one call")
+	}
+}
+
+// Refs beyond the line budget are not free: the agent never sees them.
+func TestScore_RefsOutsideTheBudgetDoNotCount(t *testing.T) {
+	inst := instance{GoldFiles: []string{"a.go", "b.go"}}
+	res := evalharness.Result{
+		Files:    []string{"a.go", "z.go"},
+		Visible:  []string{"1-400", "1-400"},
+		RefFiles: [][]string{nil, {"b.go"}},
+	}
+
+	// Budget 500 fits only the first result, so z.go's refs never arrive.
+	m := scoreWithBudget(inst, res, 500)
+	close(t, m.goldViaRefs, 0.5, "b.go is behind a result the budget cut")
+	if m.completeInOneCall {
+		t.Fatal("a ref the reader never receives cannot save a search")
+	}
+}

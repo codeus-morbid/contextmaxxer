@@ -31,9 +31,13 @@ type toolPayload struct {
 		Visible   string  `json:"visible_lines"`
 		Callers   []struct {
 			Name string `json:"name"`
+			// File is what makes a ref countable as reach: a probe scoring
+			// (file, lines) tuples needs to know which file a free hop lands in.
+			File string `json:"file"`
 		} `json:"callers"`
 		Callees []struct {
 			Name string `json:"name"`
+			File string `json:"file"`
 		} `json:"callees"`
 	} `json:"symbols"`
 	RetrievalHealth *struct {
@@ -60,8 +64,13 @@ type Result struct {
 	// Callers and Callees are the graph refs shown for each result. They are
 	// what makes a chain followable without a second search, so cmd/chainprobe
 	// measures exactly them.
-	Callers    [][]string
-	Callees    [][]string
+	Callers [][]string
+	Callees [][]string
+	// RefFiles is the set of files reachable through the graph refs shown for
+	// each result — the hops an agent can take without a second search. Kept
+	// separate from Files because a probe measuring saved calls has to
+	// distinguish what was RETURNED from what merely became reachable.
+	RefFiles   [][]string
 	Confidence string  // "" when the server omitted retrieval_health
 	TopGap     float32 // relative top1-top2 gap as the server computed it
 }
@@ -240,6 +249,7 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		Visible:   make([]string, len(p.Symbols)),
 		Callers:   make([][]string, len(p.Symbols)),
 		Callees:   make([][]string, len(p.Symbols)),
+		RefFiles:  make([][]string, len(p.Symbols)),
 	}
 	for i, sym := range p.Symbols {
 		out.Names[i] = sym.Name
@@ -250,9 +260,15 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 		out.Visible[i] = sym.Visible
 		for _, c := range sym.Callers {
 			out.Callers[i] = append(out.Callers[i], c.Name)
+			if c.File != "" {
+				out.RefFiles[i] = append(out.RefFiles[i], c.File)
+			}
 		}
 		for _, c := range sym.Callees {
 			out.Callees[i] = append(out.Callees[i], c.Name)
+			if c.File != "" {
+				out.RefFiles[i] = append(out.RefFiles[i], c.File)
+			}
 		}
 	}
 	if p.RetrievalHealth != nil {

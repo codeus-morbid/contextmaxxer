@@ -93,6 +93,8 @@ func main() {
 		fuhCount                               int
 		sumHitRegion, sumF1, sumNDCGB          float64
 		sumKept, sumShown, sumUnique           int
+		sumGoldViaRefs                         float64
+		completeOneCall                        int
 	)
 
 	for _, inst := range instances {
@@ -168,6 +170,10 @@ func main() {
 		sumKept += m.kept
 		sumShown += m.shownLines
 		sumUnique += m.uniqueFiles
+		sumGoldViaRefs += m.goldViaRefs
+		if m.completeInOneCall {
+			completeOneCall++
+		}
 		if *dumpFiles {
 			// instance <TAB> returned files <TAB> gold files. Enough to ask,
 			// offline, whether a missed gold file was reachable through the graph
@@ -232,6 +238,14 @@ func main() {
 		float64(sumKept)/f, *maxResults, float64(sumShown)/f)
 	fmt.Printf("distinct files %.1f of %.1f results — the rest are further symbols from a file already in the list\n",
 		float64(sumUnique)/f, float64(sumKept)/f)
+
+	// What ONE call puts within reach, counting the graph refs the response
+	// already carries. This is the saved-calls figure: an agent that can follow
+	// a ref does not pay for a second search.
+	fmt.Printf("\n--- what one call reaches (results + graph refs) ---\n")
+	fmt.Printf("gold within reach   %.3f   (returned outright: %.3f)\n", sumGoldViaRefs/f, sumFileRecall/f)
+	fmt.Printf("no second search    %.3f   share of tasks where ALL gold is reachable from one call (%d of %d)\n",
+		float64(completeOneCall)/f, completeOneCall, scored)
 	fmt.Println("nDCG is our reading of their formula; Prec/Rec/HitFile are unambiguous.")
 }
 
@@ -244,6 +258,10 @@ type metrics struct {
 	hitRegion, f1, ndcgB float64
 	kept, shownLines     int
 	uniqueFiles          int
+	// goldViaRefs is gold reachable from ONE call: results plus what their graph
+	// refs point at. completeInOneCall means no second search is needed at all.
+	goldViaRefs       float64
+	completeInOneCall bool
 }
 
 // score turns one response into the benchmark's metrics. Line-level numbers use
@@ -275,6 +293,37 @@ func scoreWithBudget(inst instance, res evalharness.Result, budget int) metrics 
 		distinct[normPath(res.Files[i])] = true
 	}
 	m.uniqueFiles = len(distinct)
+
+	// Saved calls. A response carries graph refs, and following one costs the
+	// agent nothing — the next symbol is already on the page. So the honest
+	// measure of "how many searches did this replace" is not how many queries an
+	// agent happened to issue (that varied 57% between identical runs) but what
+	// ONE call puts within reach: the files returned, plus the files its refs
+	// point at.
+	//
+	// reachedFiles counts gold covered that way; completeInOneCall says the
+	// agent never needs a second search for this task at all.
+	reachable := make(map[string]bool, len(distinct))
+	for f := range distinct {
+		reachable[f] = true
+	}
+	for i := 0; i < cut && i < len(res.RefFiles); i++ {
+		for _, rf := range res.RefFiles[i] {
+			if rf != "" {
+				reachable[normPath(rf)] = true
+			}
+		}
+	}
+	if len(gold) > 0 {
+		hit := 0
+		for g := range gold {
+			if reachable[g] {
+				hit++
+			}
+		}
+		m.goldViaRefs = float64(hit) / float64(len(gold))
+		m.completeInOneCall = hit == len(gold)
+	}
 	seen := map[string]bool{}
 	var rels []float64
 	for i, file := range res.Files[:cut] {
