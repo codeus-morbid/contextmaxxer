@@ -326,20 +326,52 @@ the flag does bite it bites hard — ansible +263 files, caddy +57 to +68, axios
 +41 — and on carbon the one file it adds is `src/Carbon/Traits/Test.php`,
 production code the `Test.php` suffix rule catches by mistake.
 
-Re-run on the nine snapshots where the corpus does differ, same protocol, same
-queries, `-max 40 -rerank 40`:
+Re-run properly. Scanning all 689 indexed snapshots for files the flag would
+add shows the corpus moves on 606 of them, so the old sample was close to the
+worst one available. The replacement was chosen from that scan: 124 snapshots
+across seven repositories and three languages — qutebrowser 34, vuls 21,
+pytest 18, xarray 18, flipt 14, preact 11, requests 8 — every one of which
+gains files (11,033 in total, 88 a snapshot, verified by comparing the two
+corpora rather than by trusting the scan), and 25 of which have no test file in
+their gold at all, because a sample of only the instances that can benefit
+measures only benefit. Same protocol, `-max 40 -rerank 40`, both arms driven
+identically:
 
-| | default index | with tests |
-|---|---:|---:|
-| File recall | 0.517 | **0.643** |
-| HitRegion | 0.293 | 0.352 |
-| Prec | 0.217 | 0.232 |
+| | default index | with tests | paired delta |
+|---|---:|---:|---|
+| File recall | 0.572 | **0.692** | **+0.121, t = 6.48** (61 better / 13 worse) |
+| Prec | 0.271 | 0.221 | **-0.050, t = -4.09** (44 / 73) |
+| Line recall | 0.050 | 0.040 | -0.010, t = -4.70 |
+| F1 | 0.073 | 0.058 | -0.015, t = -4.76 |
+| HitRegion | 0.376 | 0.392 | +0.016, t = 1.35 (not significant) |
 
-**+0.126 file recall, better on 3 instances and worse on 0** (t = 1.76 at n = 9,
-so directionally strong rather than established). Precision rose, so test code
-crowding out implementation did not happen. On a sample where the flag can show,
-indexing tests is the largest single effect measured in this campaign — the
-opposite of what the contaminated version of this experiment reported.
+**This is the largest reach effect in the campaign and it is not free.** File
+recall rises 21% relative; precision falls 18% relative, line recall and F1 fall
+with it, and the mean rank of the first useful result moves 3.05 -> 3.55.
+
+Splitting by whether the instance's gold contains a test file settles what is
+happening:
+
+| | n | File recall | |
+|---|---:|---|---|
+| gold contains a test | 99 | **+0.171, t = 8.96** | 60 better / 5 worse |
+| gold contains no test | 25 | **-0.077, t = -2.58** | 1 better / 8 worse |
+
+Where the answer lives in a test file, indexing tests is worth a great deal.
+Where it does not, test code crowds out implementation and the answer gets
+worse — the cost this experiment was supposed to look for, found at last on a
+sample able to show it, spread across five of the seven repositories (xarray
+-0.155, pytest -0.200, flipt -0.067, vuls -0.028) rather than coming from one.
+
+An earlier reading of this result on nine snapshots reported that precision rose.
+At n = 124 it does not; that reading was noise.
+
+**So this is a trade, not an upgrade, and it should not become the default on
+the strength of a benchmark whose gold is "what a solver read" — solvers read
+tests, and 80% of this sample's instances have a test in their gold, which is
+not a property of agent work in general.** The shape worth measuring next is
+neither on nor off: index tests, but keep them out of the ranking unless nothing
+else matches, which is aimed exactly at the 25 instances that got worse.
 
 The honest statement is also narrower than the old one: what is excluded is
 name-conventioned tests, not test code in general. The rest of the ceiling
