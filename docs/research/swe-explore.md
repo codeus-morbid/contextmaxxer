@@ -335,14 +335,33 @@ that only appear when the number is taken apart.
 Of the 68 gold files grep alone finds at the ≥2 threshold, **52 are not in the
 index at all, and 52 of those 68 are test files** — so three quarters of the
 apparent advantage is the test-file filter measured in the row above, which
-already failed to convert. And at a fixed answer size the trade is a wash:
-replacing the tail of our ~10 unique files with the best grep candidates, ranked
-by identifier rarity within the repository, gives 0.565 against 0.558 at k=2
-(better on 25 instances, worse on 19), 0.550 at k=3, and 0.484 at k=5.
+already failed to convert.
 
-**Every attempt in this section measured reachability and expected the answer to
-follow.** It never has. The consequence worth shipping was not a ranking change
-at all: an agent that has already run grep is holding a position, and until
+The other quarter is real, and whether it is worth having depends entirely on
+how deep the answer goes. Replacing the tail of our answer with the best grep
+candidates, ranked by identifier rarity within the repository, at a fixed number
+of unique files:
+
+| swapped | ours 10 files (max_results 20) | ours 18 files (max_results 40, rerank pool 40) |
+|---|---:|---:|
+| none | 0.558 | 0.596 |
+| 2 | 0.565 (25 better / 19 worse) | **0.643** (27 / 6, sign test p = 0.0003) |
+| 3 | 0.550 (27 / 27) | **0.647** (33 / 11, p = 0.0013) |
+| 5 | 0.484 (22 / 40) | 0.639 (37 / 17, p = 0.009) |
+
+**A grep candidate beats our own result from about rank 11 down.** At ten files
+the swap discards results that were still discriminating and the trade is a
+wash; at eighteen it replaces a tail that has stopped discriminating, and it is
+the first significant reach improvement in this campaign. Two caveats bound the
+claim: the simulation scores unique files with no line budget at all, where
+HitFile scores regions under B=500, and a grep candidate arrives as a file with
+no region, so it would spend that budget differently. It gives the sign of the
+trade, not a HitFile prediction.
+
+**Every other attempt in this section measured reachability and expected the
+answer to follow.** It never has. The consequence shipped so far is not a
+ranking change at all: an agent that has already run grep is holding a position,
+and until
 `internal/retrieve/locator.go` there was no way to ask this tool about one —
 `find_context` took prose and `expand_context` took a `request_id` from a prior
 `find_context`. A query of the form `path:line` is now answered by lookup,
