@@ -360,6 +360,10 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		}
 	}
 
+	// Last, so it governs the order the cut actually sees — including anything
+	// the literal channel promoted, which can itself be a test file.
+	scored = applyTestFloor(scored, req.TestFloor)
+
 	if len(scored) > req.MaxResults {
 		scored = scored[:req.MaxResults]
 	}

@@ -72,6 +72,7 @@ func main() {
 	serverArgs := flag.String("server-args", "", "extra flags for the served mcp process, space separated, e.g. -reranker=none")
 	only := flag.String("only", "", "score just this instance_id. A distributed worker deletes each snapshot after scoring it, so without this the scorer would re-walk every index still on disk")
 	queryMode := flag.String("query-mode", "raw", "what to search for: raw (the whole issue report), title, ids (code identifiers), title+ids. Every ablation left HitFile unmoved, so the query itself is the untested stage")
+	testFloor := flag.Int("test-floor", 0, "reserve this many top answer slots for non-test files; tests fill what implementation candidates leave empty (0 = off)")
 	literalSlots := flag.Int("literal", 0, "hand this many of the last answer slots to files where several of the query's identifiers occur together (0 = off). Measured to need an index built with --include-tests; see internal/retrieve/literal.go")
 	anchorExpand := flag.Int("anchor-expand", 0, "add this many 1-hop graph neighbours of the top seeds to the candidate pool (0 = off). 64.5%% of missed gold that IS indexed sits within 1-2 hops of something we returned")
 	dumpFiles := flag.Bool("dump-files", false, "print instance, returned files and gold files as TSV, for offline analysis of what was missed")
@@ -145,6 +146,9 @@ func main() {
 		}
 		if *anchorExpand > 0 {
 			srv.SetAnchorExpand(*anchorExpand)
+		}
+		if *testFloor > 0 {
+			srv.SetTestFloor(*testFloor)
 		}
 		if *literalSlots > 0 {
 			srv.SetLiteralSlots(*literalSlots)

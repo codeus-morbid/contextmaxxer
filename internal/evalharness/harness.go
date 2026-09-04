@@ -85,6 +85,7 @@ type Server struct {
 	fullBodies   int
 	anchorExp    int
 	literalSlots int
+	testFloor    int
 	rerankK      int
 	alpha        string
 	skipIntent   bool
@@ -160,6 +161,9 @@ func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
 // subsequent call on this server (experiment knob; 0 = server default).
 func (s *Server) SetSeedK(k int) { s.seedK = k }
 
+// SetTestFloor reserves N top answer slots for non-test files (experiment knob).
+func (s *Server) SetTestFloor(n int) { s.testFloor = n }
+
 // SetLiteralSlots hands the last N answer slots to files where several of the
 // query's identifiers occur together (experiment knob).
 func (s *Server) SetLiteralSlots(n int) { s.literalSlots = n }
@@ -218,6 +222,9 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
+	}
+	if s.testFloor > 0 {
+		args["test_floor"] = s.testFloor
 	}
 	if s.literalSlots > 0 {
 		args["literal_slots"] = s.literalSlots

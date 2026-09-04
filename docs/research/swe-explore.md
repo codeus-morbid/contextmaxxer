@@ -369,9 +369,44 @@ At n = 124 it does not; that reading was noise.
 **So this is a trade, not an upgrade, and it should not become the default on
 the strength of a benchmark whose gold is "what a solver read" — solvers read
 tests, and 80% of this sample's instances have a test in their gold, which is
-not a property of agent work in general.** The shape worth measuring next is
-neither on nor off: index tests, but keep them out of the ranking unless nothing
-else matches, which is aimed exactly at the 25 instances that got worse.
+not a property of agent work in general.**
+
+**Tests in the index, out of the ranking — measured, and it does not do what it
+was built to do.** `internal/retrieve/testfloor.go` reserves the first N answer
+slots for non-test files; tests keep their relative order behind them and fill
+what implementation leaves empty. Swept on the same 124 snapshots, against the
+default (no-tests) index:
+
+| | File recall | Prec | F1 | line recall |
+|---|---:|---:|---:|---:|
+| default index | 0.572 | 0.271 | 0.073 | 0.050 |
+| tests, floor 0 | 0.692 | 0.221 | 0.058 | 0.040 |
+| **tests, floor 10** | **0.692** | **0.244** | 0.065 | 0.045 |
+| tests, floor 40 | 0.651 | 0.242 | 0.065 | 0.046 |
+
+Floor 0 reproduced the earlier arm to three decimals on every metric, so the
+sweep is measuring the knob and not the build.
+
+**Floor 10 is free precision: +0.023 (t = 4.11, 38 better / 11 worse) for a file
+recall delta of exactly 0.0000 — zero instances better, zero worse.** Half the
+precision cost of indexing tests is recovered without giving up any of the reach.
+
+**It does not fix the instances that got worse, and cannot.** The 25 instances
+whose gold holds no test file are still at -0.077, unchanged to four decimals.
+Reordering a list cannot change which files are in it, and file recall is
+membership. The harm is not tests outranking implementation; it is test symbols
+taking slots in the returned 40 and pushing implementation files out of the list
+altogether. The prediction that a floor would address it was wrong, and wrong
+structurally rather than by a margin.
+
+Only floor 40 changes membership — it pulls non-tests up from deeper to fill the
+reserved slots — and it pays for it: the harmed group improves to -0.044
+(no longer significant, t = -1.48) while the 99 that benefit fall from +0.171 to
++0.111, and overall file recall drops 0.692 -> 0.651 (27 instances worse, 7
+better). Trading a third of the gain to remove two fifths of the harm is a bad
+deal when the gaining group is four times larger — on this benchmark. On a
+workload where the answer rarely lives in a test, the same arithmetic points the
+other way, which is the whole reason not to fix the operating point here.
 
 The honest statement is also narrower than the old one: what is excluded is
 name-conventioned tests, not test code in general. The rest of the ceiling

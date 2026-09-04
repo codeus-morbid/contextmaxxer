@@ -96,7 +96,11 @@ func SkipDir(name string) bool {
 // DECISION: test file patterns are filtered at the file level, not directory level,
 // because some projects keep legitimate non-test code in directories named "test/".
 // Patterns cover Go (_test.go), TS/JS (.test.*, .spec.*) and Python (test_*.py, *_test.py).
-func isTestFile(name string) bool {
+// IsTestFile reports whether a filename follows a test naming convention.
+// Exported so ranking can ask the same question the walker asks: two copies of
+// this rule silently disagreeing is how a knob ends up dead on arrival (the
+// retrieval package's own isTestFile covers Go and TypeScript only).
+func IsTestFile(name string) bool {
 	lower := strings.ToLower(name)
 	if strings.HasSuffix(lower, "_test.go") {
 		return true
@@ -178,7 +182,7 @@ func (w *Walker) Walk(ctx context.Context, root string) (<-chan FileRecord, <-ch
 				return nil
 			}
 
-			if !w.cfg.IncludeTests && isTestFile(d.Name()) {
+			if !w.cfg.IncludeTests && IsTestFile(d.Name()) {
 				w.log.Debug("skipping test file", "path", path)
 				return nil
 			}

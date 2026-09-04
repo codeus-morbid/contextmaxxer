@@ -263,6 +263,10 @@ type Request struct {
 	// AnchorExpand adds this many 1-hop graph neighbours of the top seeds to the
 	// candidate pool (0 = off).
 	AnchorExpand int
+	// TestFloor reserves this many top answer slots for non-test files (0 = off).
+	// Tests keep their order behind them, so they fill what implementation
+	// candidates leave empty. See internal/retrieve/testfloor.go.
+	TestFloor int
 	// LiteralSlots hands this many of the last answer slots to files where
 	// several of the query's identifiers occur together (0 = off). Worth
 	// switching on when the index holds test files; see internal/retrieve/literal.go.

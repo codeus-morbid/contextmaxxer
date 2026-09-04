@@ -167,6 +167,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		mcp.WithBoolean("preserve_full_bodies",
 			mcp.Description("Skip query-relevant evidence trimming and return whole indexed excerpts (experiment knob)"),
 		),
+		mcp.WithNumber("test_floor",
+			mcp.Description("Reserve this many top answer slots for non-test files; tests keep their order behind them and fill what is left (experiment knob)"),
+		),
 		mcp.WithNumber("literal_slots",
 			mcp.Description("Hand this many of the last answer slots to files where several of the query's identifiers occur together (experiment knob; needs an index built with --include-tests to have anything new to offer)"),
 		),
@@ -207,6 +210,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// to the candidate pool. Measured motivation is in fusion.go.
 		anchorExpand := req.GetInt("anchor_expand", 0)
 		literalSlots := req.GetInt("literal_slots", 0)
+		testFloor := req.GetInt("test_floor", 0)
 		// Experiment hook: the weight between lexical/vector seeds and
 		// personalized PageRank. 1.0 is seeds only, which is how much of the
 		// answer the graph is responsible for — a question the observational
@@ -261,6 +265,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			SeedK:              seedK,
 			AnchorExpand:       anchorExpand,
 			LiteralSlots:       literalSlots,
+			TestFloor:          testFloor,
 			Alpha:              float32(alpha),
 			AlphaSet:           alphaSet,
 			SkipIntent:         skipIntent,
