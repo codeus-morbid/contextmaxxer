@@ -213,14 +213,17 @@ var (
 // emitAdditionalContext writes the PostToolUse JSON that adds a line to the
 // agent's context.
 //
-// ASSUMES: this hookSpecificOutput shape, which is documented for PostToolUse
-// but was not verified against a live host from here. The failure mode is
-// chosen to be harmless: exit 0 with JSON on stdout, so a host that does not
-// understand the field ignores it and the agent sees nothing. The louder
-// alternative — exit 2, whose stderr is fed back to the model — is not used,
-// because it renders a suggestion as a tool error.
-// REVISIT IF: a live session shows the context never arriving; then exit 2 is
-// the fallback, at the cost of how it reads.
+// VERIFIED(2026-09-04) against a live Claude Code session: the text arrives in
+// the model's context immediately after the tool result, on its own line
+// prefixed "PostToolUse:Grep hook additional context: ...". Exit 0 with JSON on
+// stdout is therefore enough, and the louder alternative — exit 2, whose stderr
+// is fed back to the model — stays unused, because it renders a suggestion as a
+// tool error.
+//
+// Getting that verification took four session restarts and turned up the reason
+// no hook this project ever installed had run on Windows: see shellCommandPath
+// in hostsetup.go. Until that was fixed the hook died at "command not found"
+// with a clean exit code, so nothing about this field could be observed at all.
 func emitAdditionalContext(msg string) {
 	out := map[string]any{
 		"hookSpecificOutput": map[string]any{
