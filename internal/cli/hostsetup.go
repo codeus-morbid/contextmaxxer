@@ -183,6 +183,10 @@ func mergeClaudeHooks(path, cmdPath string) (bool, error) {
 	}
 	add("PreToolUse", "Grep|Glob", quoted+" hook pre-search")
 	add("PostToolUse", "mcp__.*__find_context", quoted+" hook post-find")
+	// The moment after a grep is the one moment the agent holds a position and
+	// this tool answers it by lookup. Matched on Grep alone: Glob returns
+	// filenames, and a path with no line is a weaker thing to hand over.
+	add("PostToolUse", "Grep", quoted+" hook post-search")
 	if !changed {
 		return false, nil
 	}

@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/evalharness"
@@ -44,6 +45,7 @@ func main() {
 	indexPath := flag.String("index", "./.contextmaxxer/index.db", "index db")
 	chainFile := flag.String("chains", "", "hand-traced chains, one symbol per line, blank line between chains")
 	maxResults := flag.Int("max", 5, "max_results per call (the served default)")
+	repoRoot := flag.String("repo", "", "snapshot root; when set, also prices each hop as a text search (files a grep for the next hop's name matches, and how far down the target sits)")
 	verbose := flag.Bool("v", false, "print every hop")
 	flag.Parse()
 
@@ -64,6 +66,35 @@ func main() {
 	}
 	defer srv.Stop()
 
+	// Pricing the text-search arm needs to know which file holds each target,
+	// and the tool is the thing that knows. Asked once per distinct symbol up
+	// front so the hop loop measures hops and not bookkeeping.
+	var grep *grepIndex
+	symbolFile := map[string]string{}
+	if *repoRoot != "" {
+		grep, err = newGrepIndex(*repoRoot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "scan repo:", err)
+			os.Exit(1)
+		}
+		for _, ch := range chains {
+			for _, sym := range ch.symbols {
+				if _, done := symbolFile[sym]; done {
+					continue
+				}
+				res, err := srv.Find(identifierWords(sym), *maxResults)
+				if err != nil {
+					continue
+				}
+				if r := indexOfName(res.Names, sym); r >= 0 {
+					symbolFile[sym] = res.Files[r]
+				}
+			}
+		}
+	}
+	var grepMatches, grepReads []int
+	var grepAbsent, grepUnknownFile int
+
 	var covered, sibling, missed, retrieved, hops, dispatchHops int
 	for _, ch := range chains {
 		for i := 0; i+1 < len(ch.symbols); i++ {
@@ -78,6 +109,23 @@ func main() {
 				continue
 			}
 			hops++
+			if grep != nil {
+				ident := shortName(to)
+				hits := grep.matches(ident)
+				grepMatches = append(grepMatches, len(hits))
+				if tf, ok := symbolFile[to]; ok && tf != "" {
+					reads, found := grep.readsToTarget(ident, tf)
+					if found {
+						grepReads = append(grepReads, reads)
+					} else {
+						grepAbsent++
+					}
+				} else {
+					// The target's file is unknown, so reads-to-target cannot be
+					// computed for this hop. Counted rather than guessed.
+					grepUnknownFile++
+				}
+			}
 			res, err := srv.Find(identifierWords(from), *maxResults)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", from, err)
@@ -119,6 +167,55 @@ func main() {
 	fmt.Printf("next hop on the page: graph=%.2f (%d)  sibling=%.2f (%d)  missed=%.2f (%d)\n",
 		rate(covered, hops), covered, rate(sibling, hops), sibling, rate(missed, hops), missed)
 	fmt.Printf("followable without a new search: %.2f\n", rate(covered+sibling, hops))
+
+	if grep != nil {
+		fmt.Printf("\n--- the same hops priced as a text search ---\n")
+		fmt.Printf("grep for the next hop's name matches: mean %.1f files, median %d, max %d\n",
+			mean(grepMatches), median(grepMatches), max(grepMatches))
+		fmt.Printf("files opened before reaching the target: mean %.1f, median %d  (n=%d)\n",
+			mean(grepReads), median(grepReads), len(grepReads))
+		if grepAbsent > 0 {
+			fmt.Printf("  target's file not in the grep output at all: %d hops\n", grepAbsent)
+		}
+		if grepUnknownFile > 0 {
+			fmt.Printf("  target's file unknown, hop not priced: %d hops\n", grepUnknownFile)
+		}
+		fmt.Printf("\nfollowing one hop: %d of %d arrive with the previous answer and cost 0 further calls;\n",
+			covered+sibling, hops)
+		fmt.Printf("the text-search arm pays 1 search plus the reads above, every hop.\n")
+		fmt.Printf("Reads-to-target assumes grep output is read in order, so it is an upper bound;\n")
+		fmt.Printf("the match count is the haystack, and it is exact.\n")
+	}
+}
+
+func mean(xs []int) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := 0
+	for _, x := range xs {
+		s += x
+	}
+	return float64(s) / float64(len(xs))
+}
+
+func median(xs []int) int {
+	if len(xs) == 0 {
+		return 0
+	}
+	c := append([]int(nil), xs...)
+	sort.Ints(c)
+	return c[len(c)/2]
+}
+
+func max(xs []int) int {
+	m := 0
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
 }
 
 // indexOfName matches on the qualified name, tolerating the package prefix

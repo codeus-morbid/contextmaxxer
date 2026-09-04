@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/feedback"
@@ -38,6 +40,10 @@ func RunHook(args []string) int {
 		// run on all three.
 		SessionID      string `json:"session_id"`
 		ConversationID string `json:"conversation_id"`
+		// ToolResponse is whatever the gated tool returned. Read as raw JSON
+		// because Grep's shape depends on its output_mode, and post-search only
+		// needs a path and a line out of it.
+		ToolResponse json.RawMessage `json:"tool_response"`
 	}
 	if data, err := io.ReadAll(os.Stdin); err == nil && len(data) > 0 {
 		_ = json.Unmarshal(data, &in)
@@ -72,6 +78,32 @@ func RunHook(args []string) int {
 		}
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
+	case "post-search":
+		// The agent has just run grep and is holding a position. That is the one
+		// moment this tool answers without embedding, reranking or a phrase to
+		// invent — and until the locator branch existed there was no way to ask
+		// it about a position at all.
+		//
+		// Fires once per session: the nudge is worth making when the agent first
+		// has a hit to hand over, and worth nothing repeated after every grep.
+		if marker == "" {
+			return 0
+		}
+		nudged := marker + ".nudged"
+		if _, err := os.Stat(nudged); err == nil {
+			return 0
+		}
+		loc := firstLocator(in.ToolResponse)
+		if loc == "" {
+			return 0 // no path in the output: nothing concrete to suggest
+		}
+		_ = os.WriteFile(nudged, []byte("1"), 0o644)
+		emitAdditionalContext(fmt.Sprintf(
+			"That grep hit can be handed straight to find_context: query %q. "+
+				"A position is looked up, not searched — it returns the symbol "+
+				"enclosing that line with its callers and callees, which grep "+
+				"cannot give you, and costs no embedding or rerank.", loc))
+		return 0
 	case "search-signal":
 		// DECISION(2026-08): records the observation and NEVER blocks. The gate
 		// needs to know find_context has answered, which on Claude Code comes
@@ -144,4 +176,59 @@ func recordSearchAfterContext() {
 		return
 	}
 	_, _ = feedback.RecordObservedOutcome(path, feedback.OutcomeSearchedAfterContext, searchAfterContextWindow)
+}
+
+// firstLocator pulls a concrete "path:line" out of a tool response.
+//
+// Grep's response shape depends on its output_mode (matching lines, file names,
+// or counts), and no schema is depended on here: the raw JSON is searched for
+// the shapes a text search emits, preferring one that carries a line number
+// because that is what makes the suggestion a position rather than a file.
+func firstLocator(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// A Windows path arrives inside JSON as escaped backslashes ("a\\b\\c.go").
+	// Matching on the raw bytes would stop at the first one, so separators are
+	// normalized to "/" before matching — which is also the form the locator
+	// branch normalizes to.
+	text := strings.ReplaceAll(string(raw), `\\`, "/")
+	if m := rePathLine.FindStringSubmatch(text); m != nil {
+		return m[1] + ":" + m[2]
+	}
+	if m := rePathOnly.FindStringSubmatch(text); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var (
+	// A path with a line number, as `rg -n` prints it. The path must contain a
+	// separator: a bare "config.py:3" out of prose would be a guess, and the
+	// locator branch refuses anything the index cannot resolve anyway.
+	rePathLine = regexp.MustCompile(`([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+\.[A-Za-z0-9]{1,5}):(\d+)`)
+	rePathOnly = regexp.MustCompile(`([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+\.[A-Za-z0-9]{1,5})`)
+)
+
+// emitAdditionalContext writes the PostToolUse JSON that adds a line to the
+// agent's context.
+//
+// ASSUMES: this hookSpecificOutput shape, which is documented for PostToolUse
+// but was not verified against a live host from here. The failure mode is
+// chosen to be harmless: exit 0 with JSON on stdout, so a host that does not
+// understand the field ignores it and the agent sees nothing. The louder
+// alternative — exit 2, whose stderr is fed back to the model — is not used,
+// because it renders a suggestion as a tool error.
+// REVISIT IF: a live session shows the context never arriving; then exit 2 is
+// the fallback, at the cost of how it reads.
+func emitAdditionalContext(msg string) {
+	out := map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":     "PostToolUse",
+			"additionalContext": msg,
+		},
+	}
+	if b, err := json.Marshal(out); err == nil {
+		fmt.Println(string(b))
+	}
 }

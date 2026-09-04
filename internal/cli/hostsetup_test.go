@@ -86,8 +86,29 @@ func TestMergeClaudeHooksIdempotentAndPreserving(t *testing.T) {
 		t.Fatalf("want user hook + gate hook, got %d entries", len(pre))
 	}
 	post := doc["hooks"].(map[string]any)["PostToolUse"].([]any)
-	if len(post) != 1 {
-		t.Fatalf("want 1 PostToolUse entry, got %d", len(post))
+	if len(post) != 2 {
+		t.Fatalf("want the find_context and the post-grep hook, got %d entries", len(post))
+	}
+	// Both PostToolUse hooks must be present and distinguishable: they were
+	// added by the same helper, whose duplicate detection keys on the "hook
+	// <name>" tail, so a collision there would silently drop one.
+	blob, _ := json.Marshal(post)
+	for _, want := range []string{"hook post-find", "hook post-search"} {
+		if !strings.Contains(string(blob), want) {
+			t.Fatalf("PostToolUse is missing %q: %s", want, blob)
+		}
+	}
+	// The post-grep nudge is matched on Grep alone: Glob returns filenames, and
+	// a path with no line is a weaker thing to hand over than a position.
+	var postSearchMatcher string
+	for _, e := range post {
+		m := e.(map[string]any)
+		if b, _ := json.Marshal(m); strings.Contains(string(b), "hook post-search") {
+			postSearchMatcher, _ = m["matcher"].(string)
+		}
+	}
+	if postSearchMatcher != "Grep" {
+		t.Fatalf("post-search matcher = %q, want Grep", postSearchMatcher)
 	}
 
 	changed, err = mergeClaudeHooks(path, "ctxm")
