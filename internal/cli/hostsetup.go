@@ -175,12 +175,9 @@ func mergeClaudeHooks(path, cmdPath string) (bool, error) {
 		hooks[key] = arr
 		changed = true
 	}
-	// The hook command runs through a shell: a binary path with spaces
-	// (e.g. Program Files) must be quoted.
-	quoted := cmdPath
-	if strings.Contains(quoted, " ") {
-		quoted = `"` + quoted + `"`
-	}
+	// The hook command runs through a shell, which both splits on spaces and
+	// eats backslashes. See shellCommandPath.
+	quoted := shellCommandPath(cmdPath)
 	add("PreToolUse", "Grep|Glob", quoted+" hook pre-search")
 	add("PostToolUse", "mcp__.*__find_context", quoted+" hook post-find")
 	// The moment after a grep is the one moment the agent holds a position and
@@ -510,10 +507,27 @@ func mergeCodexHooks(path, cmdPath string) (bool, error) {
 	return true, saveJSONObject(path, doc)
 }
 
-// quoteIfSpaced quotes a binary path that a shell would otherwise split.
-func quoteIfSpaced(p string) string {
+// shellCommandPath makes a binary path safe to put inside a hook command.
+//
+// A hook command is executed THROUGH A SHELL, and a shell eats backslashes as
+// escapes: `C:\Users\dev\...\contextmaxxer.exe` reaches bash as
+// `C:Usersdev...contextmaxxer.exe`, which is not found — and the hook then
+// fails silently, because the host sees a clean exit. Measured on this machine:
+// every hook this installer has ever written on Windows has been dead on
+// arrival for exactly this reason, which is why no discovery gate ever fired
+// and the feedback log stopped growing.
+//
+// Windows accepts forward slashes in paths, so converting is enough and does
+// not depend on quoting. Quoting alone would have been an accident of the path:
+// `C:\Program Files\...` survives because it contains a space and gets quoted,
+// while `C:\Users\...` does not.
+func shellCommandPath(p string) string {
+	p = strings.ReplaceAll(p, `\`, "/")
 	if strings.Contains(p, " ") {
 		return `"` + p + `"`
 	}
 	return p
 }
+
+// quoteIfSpaced quotes a binary path that a shell would otherwise split.
+func quoteIfSpaced(p string) string { return shellCommandPath(p) }

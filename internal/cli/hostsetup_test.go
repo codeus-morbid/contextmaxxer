@@ -301,10 +301,56 @@ func TestMergeCodexHooksWiresTheSignalAndIsIdempotent(t *testing.T) {
 func TestQuoteIfSpaced(t *testing.T) {
 	// A hook command runs through a shell; an unquoted "Program Files" path
 	// would split into two arguments and the hook would silently never run.
-	if got := quoteIfSpaced(`C:\Program Files\ctx.exe`); got != `"C:\Program Files\ctx.exe"` {
+	//
+	// The separators are now normalized as well, and this test was the thing
+	// that made the old bug look handled: quoting a spaced path also happened
+	// to protect its backslashes, so the one case with a space worked while
+	// every path without one — C:\Users\... — was silently broken.
+	if got := quoteIfSpaced(`C:\Program Files\ctx.exe`); got != `"C:/Program Files/ctx.exe"` {
 		t.Fatalf("spaced path not quoted: %s", got)
 	}
 	if got := quoteIfSpaced("/bin/ctx"); got != "/bin/ctx" {
 		t.Fatalf("plain path should be untouched: %s", got)
+	}
+}
+
+func TestShellCommandPathSurvivesAShell(t *testing.T) {
+	// The bug this guards: a hook command is run through a shell, and bash
+	// treats backslashes as escapes, so a Windows path arrives as
+	// "C:Usersdev...exe" and the hook fails silently. Every hook written on
+	// Windows before this was dead on arrival.
+	got := shellCommandPath(`C:\Users\dev\Development\Contextmaxxer\dist\contextmaxxer.exe`)
+	if strings.Contains(got, `\`) {
+		t.Fatalf("a backslash survived into a shell command: %s", got)
+	}
+	if got != "C:/Users/dev/Contextmaxxer/dist/contextmaxxer.exe" {
+		t.Fatalf("unexpected conversion: %s", got)
+	}
+
+	// A spaced path still needs quoting, and must not keep backslashes either.
+	spaced := shellCommandPath(`C:\Program Files\ctx\contextmaxxer.exe`)
+	if spaced != `"C:/Program Files/ctx/contextmaxxer.exe"` {
+		t.Fatalf("spaced path: %s", spaced)
+	}
+
+	// A POSIX path is left alone apart from quoting.
+	if p := shellCommandPath("/usr/local/bin/contextmaxxer"); p != "/usr/local/bin/contextmaxxer" {
+		t.Fatalf("posix path changed: %s", p)
+	}
+}
+
+func TestMergeClaudeHooksWritesShellSafePaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if _, err := mergeClaudeHooks(path, `C:\Users\dev\dist\contextmaxxer.exe`); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The JSON encoding escapes a real backslash as \, so look for that.
+	if strings.Contains(string(data), `\`) {
+		t.Fatalf("installer wrote a backslash path a shell would break:\n%s", data)
 	}
 }
