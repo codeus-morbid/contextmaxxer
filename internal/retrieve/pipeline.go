@@ -143,6 +143,22 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	start := time.Now()
 	var stats Stats
 
+	// A query that names a position in a known file is answered by lookup.
+	// It runs before embedding on purpose: this is the branch an agent reaches
+	// holding grep output, and none of the expensive stages have anything to
+	// contribute once the file is already known. Falls through whenever the
+	// path does not resolve, so an ordinary query is never captured by it.
+	if locScored, locPaths, ok, err := locatorResults(ctx, r, req); err != nil {
+		return Result{}, err
+	} else if ok {
+		stats.SeedCount = len(locScored)
+		locReq := req
+		// See the DECISION on locatorResults: the query is a path, so there is
+		// nothing to trim a body against.
+		locReq.PreserveFullBodies = true
+		return finishPipeline(ctx, r, locReq, locScored, locPaths, nil, stats, start)
+	}
+
 	t0 := time.Now()
 	var qvec []float32
 	vecs, err := embed.EmbedQueries(ctx, r.embedder, []string{req.Query})
@@ -336,6 +352,16 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 	if len(scored) > req.MaxResults {
 		scored = scored[:req.MaxResults]
 	}
+
+	return finishPipeline(ctx, r, req, scored, filePaths, qvec, stats, start)
+}
+
+// finishPipeline turns a ranked list into the served response: packing, body
+// hydration, enrichment, stats. Extracted so the locator branch — which builds
+// its ranking by lookup instead of by search — returns exactly the same shape
+// as a searched answer instead of a second copy that drifts from this one.
+func finishPipeline(ctx context.Context, r *Retriever, req Request, scored []ScoredResult,
+	filePaths map[int64]string, qvec []float32, stats Stats, start time.Time) (Result, error) {
 
 	tPack := time.Now()
 	selected, _ := Pack(scored, req.BudgetTokens, req.FullBodyResults)

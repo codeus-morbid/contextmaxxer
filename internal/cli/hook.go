@@ -110,7 +110,10 @@ const hookBlockMessage = "Use find_context first. This repository has a semantic
 	"that measurably costs 17% precision — and do not reduce it to bare identifiers either, " +
 	"which is worse still. Name the mechanism in a phrase. " +
 	"grep/glob become available after find_context for literal-string or filename " +
-	"searches. [Contextmaxxer discovery gate]"
+	"searches — and when a grep hit matters, paste it straight back as the query " +
+	"(\"path/to/file.go:142\", or the whole grep line): that form is an index lookup, " +
+	"not a search, and returns the enclosing symbol with its callers and callees, " +
+	"which grep cannot give you. [Contextmaxxer discovery gate]"
 
 // hookMarkerPath returns a per-session marker file path, or "" if there is no
 // session id (in which case the gate fails open).

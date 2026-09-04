@@ -317,6 +317,40 @@ The ceiling rose by 21 points for this subset and the answer moved by under
 two. **Removing the largest cause of unreachability did not help, because what
 is retrieved is not limited by what is present.**
 
+**Merging grep into the ranking — a ceiling that does not convert either.**
+Literal identifier search has the property the graph lacks: a substring either
+matches or it does not. Extracting the code identifiers from each issue the way
+`-query-mode ids` does and scanning the snapshot for them, over 150 instances
+and 471 gold files:
+
+| files must contain | grep finds | union with ours | grep only | files per query |
+|---|---:|---:|---:|---:|
+| ≥1 identifier | 69.0% | 80.3% | 24.4% | 192 |
+| ≥2 identifiers | 41.6% | 70.3% | 14.4% | 57 |
+| ≥3 identifiers | 27.8% | 64.5% | 8.7% | 16 |
+
+Against our own 55.8%, the union looks decisive. It is not, for two reasons
+that only appear when the number is taken apart.
+
+Of the 68 gold files grep alone finds at the ≥2 threshold, **52 are not in the
+index at all, and 52 of those 68 are test files** — so three quarters of the
+apparent advantage is the test-file filter measured in the row above, which
+already failed to convert. And at a fixed answer size the trade is a wash:
+replacing the tail of our ~10 unique files with the best grep candidates, ranked
+by identifier rarity within the repository, gives 0.565 against 0.558 at k=2
+(better on 25 instances, worse on 19), 0.550 at k=3, and 0.484 at k=5.
+
+**Every attempt in this section measured reachability and expected the answer to
+follow.** It never has. The consequence worth shipping was not a ranking change
+at all: an agent that has already run grep is holding a position, and until
+`internal/retrieve/locator.go` there was no way to ask this tool about one —
+`find_context` took prose and `expand_context` took a `request_id` from a prior
+`find_context`. A query of the form `path:line` is now answered by lookup,
+returning the enclosing symbol with its callers and callees, with no embedding
+or reranking on the path. That is composition rather than substitution: grep
+says where a name occurs, the graph says what reaches it, and the measurement
+above says competing with grep on the first question is not worth doing.
+
 ## What this benchmark does not measure
 
 SWE-Explore asks one question: given an issue report, name every region a
