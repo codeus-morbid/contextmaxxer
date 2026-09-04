@@ -19,6 +19,7 @@ type mockStore struct {
 	ids            []int64
 	filePaths      map[int64]string
 	ftsResult      []store.ScoredSymbol
+	ftsByQuery     map[string][]store.ScoredSymbol
 	bodyFTSResult  []store.ScoredSymbol
 	chunkVecResult []store.ScoredSymbol
 	// metaCache mirrors production, where ListSymbolMeta is served from a cache
@@ -95,7 +96,12 @@ func (m *mockStore) ListAllEdges(_ context.Context) ([]store.Edge, error) {
 	return m.edges, nil
 }
 
-func (m *mockStore) SearchByText(_ context.Context, _ string, _ int) ([]store.ScoredSymbol, error) {
+func (m *mockStore) SearchByText(_ context.Context, query string, _ int) ([]store.ScoredSymbol, error) {
+	// ftsByQuery lets a test give different terms different hits, which is what
+	// the literal channel is about: agreement BETWEEN identifiers in one file.
+	if m.ftsByQuery != nil {
+		return m.ftsByQuery[query], nil
+	}
 	return m.ftsResult, nil
 }
 

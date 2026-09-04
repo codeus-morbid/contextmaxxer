@@ -77,16 +77,17 @@ type Result struct {
 
 // Server is one spawned `<bin> mcp --index <path>` process.
 type Server struct {
-	cmd        *exec.Cmd
-	in         *json.Encoder
-	out        *bufio.Scanner
-	seq        int
-	seedK      int
-	fullBodies int
-	anchorExp  int
-	rerankK    int
-	alpha      string
-	skipIntent bool
+	cmd          *exec.Cmd
+	in           *json.Encoder
+	out          *bufio.Scanner
+	seq          int
+	seedK        int
+	fullBodies   int
+	anchorExp    int
+	literalSlots int
+	rerankK      int
+	alpha        string
+	skipIntent   bool
 }
 
 // Start spawns the server and completes the MCP initialize handshake.
@@ -159,6 +160,10 @@ func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
 // subsequent call on this server (experiment knob; 0 = server default).
 func (s *Server) SetSeedK(k int) { s.seedK = k }
 
+// SetLiteralSlots hands the last N answer slots to files where several of the
+// query's identifiers occur together (experiment knob).
+func (s *Server) SetLiteralSlots(n int) { s.literalSlots = n }
+
 // SetAnchorExpand adds graph neighbours of the top seeds to the candidate pool.
 func (s *Server) SetAnchorExpand(n int) { s.anchorExp = n }
 
@@ -213,6 +218,9 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
+	}
+	if s.literalSlots > 0 {
+		args["literal_slots"] = s.literalSlots
 	}
 	if s.anchorExp > 0 {
 		args["anchor_expand"] = s.anchorExp

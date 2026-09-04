@@ -262,7 +262,11 @@ type Request struct {
 	RerankK      int
 	// AnchorExpand adds this many 1-hop graph neighbours of the top seeds to the
 	// candidate pool (0 = off).
-	AnchorExpand   int
+	AnchorExpand int
+	// LiteralSlots hands this many of the last answer slots to files where
+	// several of the query's identifiers occur together (0 = off). Worth
+	// switching on when the index holds test files; see internal/retrieve/literal.go.
+	LiteralSlots   int
 	AdaptiveRerank bool
 	// LazyRerank inverts the reranking default: the cross-encoder runs only
 	// when the fused ranking is ambiguous (small gap / several near-ties),

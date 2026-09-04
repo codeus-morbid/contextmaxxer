@@ -167,6 +167,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		mcp.WithBoolean("preserve_full_bodies",
 			mcp.Description("Skip query-relevant evidence trimming and return whole indexed excerpts (experiment knob)"),
 		),
+		mcp.WithNumber("literal_slots",
+			mcp.Description("Hand this many of the last answer slots to files where several of the query's identifiers occur together (experiment knob; needs an index built with --include-tests to have anything new to offer)"),
+		),
 		mcp.WithBoolean("adaptive_rerank",
 			mcp.Description("Skip cross-encoder rerank for confident exact/constructor top matches"),
 		),
@@ -203,6 +206,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// Experiment hook: add this many 1-hop graph neighbours of the top seeds
 		// to the candidate pool. Measured motivation is in fusion.go.
 		anchorExpand := req.GetInt("anchor_expand", 0)
+		literalSlots := req.GetInt("literal_slots", 0)
 		// Experiment hook: the weight between lexical/vector seeds and
 		// personalized PageRank. 1.0 is seeds only, which is how much of the
 		// answer the graph is responsible for — a question the observational
@@ -256,6 +260,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			RerankK:            rerankK,
 			SeedK:              seedK,
 			AnchorExpand:       anchorExpand,
+			LiteralSlots:       literalSlots,
 			Alpha:              float32(alpha),
 			AlphaSet:           alphaSet,
 			SkipIntent:         skipIntent,

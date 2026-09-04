@@ -313,9 +313,50 @@ instances, worse on none, unchanged on 28. Precision did not fall, so the
 feared cost (test code competing lexically with implementation) did not
 materialise either.
 
-The ceiling rose by 21 points for this subset and the answer moved by under
-two. **Removing the largest cause of unreachability did not help, because what
-is retrieved is not limited by what is present.**
+**That experiment is contaminated and its conclusion does not stand.** Comparing
+the two indexes file by file afterwards: on **21 of the 30 snapshots the corpora
+are identical** — `--include-tests` added not one file. The filter is by
+design a filename rule and not a path rule (`internal/index/walker.go` says so,
+because directories named `test/` also hold non-test code), so a suite organised
+as `test/topics.js` is indexed either way and the flag is a no-op for it. Twenty
+of the thirty snapshots are NodeBB, whose tests are exactly that shape. The
+design could therefore not show a difference on 21 of its 30 instances, which is
+why 28 came back "unchanged"; the real sample was 9, of which 2 improved. Where
+the flag does bite it bites hard — ansible +263 files, caddy +57 to +68, axios
++41 — and on carbon the one file it adds is `src/Carbon/Traits/Test.php`,
+production code the `Test.php` suffix rule catches by mistake.
+
+Re-run on the nine snapshots where the corpus does differ, same protocol, same
+queries, `-max 40 -rerank 40`:
+
+| | default index | with tests |
+|---|---:|---:|
+| File recall | 0.517 | **0.643** |
+| HitRegion | 0.293 | 0.352 |
+| Prec | 0.217 | 0.232 |
+
+**+0.126 file recall, better on 3 instances and worse on 0** (t = 1.76 at n = 9,
+so directionally strong rather than established). Precision rose, so test code
+crowding out implementation did not happen. On a sample where the flag can show,
+indexing tests is the largest single effect measured in this campaign — the
+opposite of what the contaminated version of this experiment reported.
+
+The honest statement is also narrower than the old one: what is excluded is
+name-conventioned tests, not test code in general. The rest of the ceiling
+decomposition above counts test files by path and is unaffected.
+
+**The literal channel — built, fires, and does not help.**
+`internal/retrieve/literal.go` scores files by how many of the query's
+identifiers occur in them, weighted by each identifier's rarity in the
+repository, and hands the last few answer slots to the best files the ranking
+did not reach. On the same nine snapshots, on top of the corpus that contains
+the tests, it moves file recall 0.643 -> 0.615: **better on zero instances,
+worse on one.** A debug response confirms it emits exactly the requested
+`literal_match` results in real files, so the null is the idea's and not the
+wiring's. It ships off (`literal_slots`, `-literal`).
+
+That is the third time on this benchmark that a candidate-side improvement
+measured well as a set and returned nothing as an answer.
 
 **Merging grep into the ranking — a ceiling that does not convert either.**
 Literal identifier search has the property the graph lacks: a substring either

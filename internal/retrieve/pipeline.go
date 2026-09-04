@@ -349,6 +349,17 @@ func runPipeline(ctx context.Context, r *Retriever, req Request) (Result, error)
 		scored = reserveAnchorSlots(scored, fused.anchors, req.MaxResults, anchorSlotShare)
 	}
 
+	if req.LiteralSlots > 0 {
+		cands, lerr := literalCandidates(ctx, r, req.Query)
+		if lerr != nil {
+			// Same resilience rule as the reranker: an extra channel failing
+			// degrades the answer, it does not fail the request.
+			r.log.Warn("literal channel failed", "err", lerr)
+		} else {
+			scored = reserveLiteralSlots(scored, cands, req.MaxResults, req.LiteralSlots)
+		}
+	}
+
 	if len(scored) > req.MaxResults {
 		scored = scored[:req.MaxResults]
 	}
