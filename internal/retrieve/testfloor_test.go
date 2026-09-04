@@ -1,8 +1,11 @@
 package retrieve
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
+	"github.com/codeus-morbid/contextmaxxer/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,4 +73,45 @@ func ids(rs []ScoredResult) []int64 {
 		out[i] = r.SymbolID
 	}
 	return out
+}
+
+func TestDefaultTestFloor(t *testing.T) {
+	// A quarter of the answer: the sweep measured 10 of 40, and the served
+	// max_results is not the probe's, so the ratio travels and the count does
+	// not.
+	assert.Equal(t, 10, defaultTestFloor(40))
+	assert.Equal(t, 5, defaultTestFloor(20))
+	assert.Equal(t, 1, defaultTestFloor(5))
+	// Too small to reserve anything without deciding the whole answer.
+	assert.Equal(t, 0, defaultTestFloor(3))
+	assert.Equal(t, 0, defaultTestFloor(1))
+}
+
+func TestRetriever_TestFloorIsOnByDefaultAndCanBeSwitchedOff(t *testing.T) {
+	symbols := []store.Symbol{
+		{ID: 1, FileID: 10, QualifiedName: "tests.test_a", Kind: "function", StartLine: 1, EndLine: 20, BodyExcerpt: "def test_a(): pass and more body here to clear the micro filter"},
+		{ID: 2, FileID: 11, QualifiedName: "pkg.impl", Kind: "function", StartLine: 1, EndLine: 20, BodyExcerpt: "def impl(): pass and more body here to clear the micro filter"},
+	}
+	newStore := func() *mockStore {
+		return &mockStore{
+			symbols:   symbols,
+			ids:       []int64{1, 2},
+			filePaths: map[int64]string{10: "tests/test_a.py", 11: "pkg/impl.py"},
+			// The test file is the stronger lexical match, so without a floor
+			// it leads.
+			ftsResult: []store.ScoredSymbol{{Symbol: symbols[0], Score: 9}, {Symbol: symbols[1], Score: 1}},
+		}
+	}
+
+	r := NewRetriever(newStore(), &mockEmbedder{}, slog.Default())
+	res, err := r.Retrieve(context.Background(), Request{Query: "test a", BudgetTokens: 10000, MaxResults: 8})
+	require.NoError(t, err)
+	require.Len(t, res.Symbols, 2)
+	assert.Equal(t, "pkg.impl", res.Symbols[0].QualifiedName, "implementation leads by default")
+
+	off := NewRetriever(newStore(), &mockEmbedder{}, slog.Default())
+	resOff, err := off.Retrieve(context.Background(), Request{Query: "test a", BudgetTokens: 10000, MaxResults: 8, TestFloor: -1})
+	require.NoError(t, err)
+	require.Len(t, resOff.Symbols, 2)
+	assert.Equal(t, "tests.test_a", resOff.Symbols[0].QualifiedName, "a negative floor switches it off")
 }

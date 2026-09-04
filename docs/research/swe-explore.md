@@ -391,6 +391,13 @@ sweep is measuring the knob and not the build.
 recall delta of exactly 0.0000 — zero instances better, zero worse.** Half the
 precision cost of indexing tests is recovered without giving up any of the reach.
 
+Shipped on by default as a quarter of the answer rather than the measured count
+of 10, since the served `max_results` is not the probe's. Checked at the second
+point before the default stood: at `max_results` 20 (floor 5) precision goes
+0.279 -> 0.313 (t = 4.07, 29 better / 4 worse), F1 0.065 -> 0.072, and file
+recall again moves by exactly 0.0000 on all 124 instances. The effect is larger
+at the smaller answer, which is what a budget argument predicts.
+
 **It does not fix the instances that got worse, and cannot.** The 25 instances
 whose gold holds no test file are still at -0.077, unchanged to four decimals.
 Reordering a list cannot change which files are in it, and file recall is

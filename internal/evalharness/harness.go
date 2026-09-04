@@ -223,7 +223,7 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	if s.seedK > 0 {
 		args["seed_k"] = s.seedK
 	}
-	if s.testFloor > 0 {
+	if s.testFloor != 0 {
 		args["test_floor"] = s.testFloor
 	}
 	if s.literalSlots > 0 {

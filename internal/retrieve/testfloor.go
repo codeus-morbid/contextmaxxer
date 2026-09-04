@@ -40,6 +40,19 @@ import (
 // score by 0.5 moves the result UP — a penalty knob would have been backwards
 // exactly where reranking was least certain.
 
+// defaultTestFloor is the floor used when a request does not set one: a quarter
+// of the answer, which is the ratio the sweep measured (10 of 40). Expressed as
+// a share rather than the measured count because a count of 10 would swallow
+// half a five-result answer, and the served max_results is not the probe's.
+//
+// A negative TestFloor switches the behaviour off; zero means "use this".
+func defaultTestFloor(maxResults int) int {
+	if maxResults <= 3 {
+		return 0
+	}
+	return maxResults / 4
+}
+
 // walkerTestFile asks the indexer's own question of a stored path. The
 // retrieval package's isTestFile is narrower (Go and TypeScript), and this
 // sample is mostly Python, so using it here would have made the knob a no-op

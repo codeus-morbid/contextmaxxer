@@ -147,7 +147,7 @@ func main() {
 		if *anchorExpand > 0 {
 			srv.SetAnchorExpand(*anchorExpand)
 		}
-		if *testFloor > 0 {
+		if *testFloor != 0 {
 			srv.SetTestFloor(*testFloor)
 		}
 		if *literalSlots > 0 {
