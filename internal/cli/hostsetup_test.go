@@ -354,3 +354,54 @@ func TestMergeClaudeHooksWritesShellSafePaths(t *testing.T) {
 		t.Fatalf("installer wrote a backslash path a shell would break:\n%s", data)
 	}
 }
+
+func TestMergeClaudeHooksRepairsAPreFixInstall(t *testing.T) {
+	// The upgrade path the first fix missed: an existing install is detected as
+	// "already wired" and left alone, so its broken backslash path would have
+	// survived every future version. The hook fails silently, so the user has
+	// no way to notice.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	// The JSON on disk carries escaped backslashes, which is what a pre-fix
+	// install looks like.
+	seed := `{"hooks":{"PreToolUse":[{"matcher":"Grep|Glob","hooks":[{"type":"command","command":"C:\\Users\\B\\dist\\ctx.exe hook pre-search"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := mergeClaudeHooks(path, "C:/Users/B/dist/ctx.exe")
+	if err != nil || !changed {
+		t.Fatalf("a broken install must be reported as changed: changed=%v err=%v", changed, err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), `\`) {
+		t.Fatalf("backslash path survived the repair:\n%s", data)
+	}
+	if !strings.Contains(string(data), "C:/Users/B/dist/ctx.exe hook pre-search") {
+		t.Fatalf("repaired command missing:\n%s", data)
+	}
+
+	// Still idempotent once repaired.
+	changed, err = mergeClaudeHooks(path, "C:/Users/B/dist/ctx.exe")
+	if err != nil || changed {
+		t.Fatalf("second run must be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestRepairShellPathsKeepsAUserEditedBinary(t *testing.T) {
+	// Only separators are touched: someone who repointed the hook at their own
+	// build keeps it.
+	entry := map[string]any{
+		"matcher": "Grep|Glob",
+		"hooks": []any{map[string]any{
+			"type": "command", "command": `D:\my\own\build\ctx.exe hook pre-search`,
+		}},
+	}
+	if !repairShellPathsInPlace(entry) {
+		t.Fatal("expected a repair")
+	}
+	got := entry["hooks"].([]any)[0].(map[string]any)["command"].(string)
+	if got != "D:/my/own/build/ctx.exe hook pre-search" {
+		t.Fatalf("user binary not preserved: %s", got)
+	}
+}

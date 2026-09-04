@@ -164,9 +164,20 @@ func mergeClaudeHooks(path, cmdPath string) (bool, error) {
 		marker := command[strings.Index(command, " hook ")+1:]
 		arr, _ := hooks[key].([]any)
 		for _, e := range arr {
-			if b, err := json.Marshal(e); err == nil && strings.Contains(string(b), marker) {
-				return // already wired; respect whatever form it has
+			b, err := json.Marshal(e)
+			if err != nil || !strings.Contains(string(b), marker) {
+				continue
 			}
+			// Already wired — respect whatever form it has, except for the one
+			// form that cannot work. Every hook written before the separator
+			// fix carries a backslash path that the shell eats, and leaving it
+			// alone would mean an existing install stays broken through every
+			// future upgrade. Only the separators are touched, so a user who
+			// repointed the command at their own binary keeps it.
+			if repairShellPathsInPlace(e) {
+				changed = true
+			}
+			return
 		}
 		arr = append(arr, map[string]any{
 			"matcher": matcher,
@@ -463,7 +474,13 @@ func mergeCursorHooks(path, cmdPath string) (bool, error) {
 	arr, _ := hooks["beforeShellExecution"].([]any)
 	for _, e := range arr {
 		if b, err := json.Marshal(e); err == nil && strings.Contains(string(b), "hook search-signal") {
-			return false, nil // already wired
+			// Already wired, but repair a pre-fix backslash path (see
+			// repairShellPathsInPlace) so an upgrade is not a silent no-op.
+			if repairShellPathsInPlace(e) {
+				doc["hooks"] = hooks
+				return true, saveJSONObject(path, doc)
+			}
+			return false, nil
 		}
 	}
 	hooks["beforeShellExecution"] = append(arr, map[string]any{
@@ -496,6 +513,10 @@ func mergeCodexHooks(path, cmdPath string) (bool, error) {
 	arr, _ := hooks["PreToolUse"].([]any)
 	for _, e := range arr {
 		if b, err := json.Marshal(e); err == nil && strings.Contains(string(b), "hook search-signal") {
+			if repairShellPathsInPlace(e) {
+				doc["hooks"] = hooks
+				return true, saveJSONObject(path, doc)
+			}
 			return false, nil
 		}
 	}
@@ -538,3 +559,37 @@ func shellCommandPath(p string) string {
 
 // quoteIfSpaced quotes a binary path that a shell would otherwise split.
 func quoteIfSpaced(p string) string { return shellCommandPath(p) }
+
+// repairShellPathsInPlace normalizes the separators of any "command" string
+// inside an already-installed hook entry, and reports whether anything changed.
+//
+// It exists because the "already wired" check makes an upgrade a no-op: without
+// this, a config written before the separator fix keeps its broken path
+// forever, and the user has no way to tell — the hook fails silently.
+func repairShellPathsInPlace(entry any) bool {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for k, v := range m {
+		switch tv := v.(type) {
+		case string:
+			if k == "command" && strings.Contains(tv, `\`) {
+				m[k] = strings.ReplaceAll(tv, `\`, "/")
+				changed = true
+			}
+		case []any:
+			for _, e := range tv {
+				if repairShellPathsInPlace(e) {
+					changed = true
+				}
+			}
+		case map[string]any:
+			if repairShellPathsInPlace(tv) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
