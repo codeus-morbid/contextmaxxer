@@ -517,8 +517,15 @@ func mergeCodexHooks(path, cmdPath string) (bool, error) {
 // arrival for exactly this reason, which is why no discovery gate ever fired
 // and the feedback log stopped growing.
 //
+// That the host uses a POSIX shell is observed, not assumed: a hook in the same
+// settings file runs `echo "Now: $(date -u -d '+3 hours' ...)"` and produces
+// correct output every turn, and neither command substitution nor `date -d`
+// exists in cmd.exe.
+//
 // Windows accepts forward slashes in paths, so converting is enough and does
-// not depend on quoting. Quoting alone would have been an accident of the path:
+// not depend on quoting. It is also the only form that does not depend on
+// knowing which shell the host picked — verified working under both bash and
+// cmd.exe. Quoting alone would have been an accident of the path:
 // `C:\Program Files\...` survives because it contains a space and gets quoted,
 // while `C:\Users\...` does not.
 func shellCommandPath(p string) string {
