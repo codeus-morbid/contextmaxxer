@@ -64,6 +64,17 @@ func RunHook(args []string) int {
 		if marker == "" {
 			return 0 // can't track the session — never block
 		}
+		// The gate blocks until find_context has answered once. It must block
+		// AT MOST ONCE, because the marker is written by a PostToolUse hook and
+		// that hook does not run when the tool call FAILS — verified live: a
+		// find_context against a corrupt index left no marker. Blocking on every
+		// search would then lock the agent out of both tools for the rest of the
+		// session, which is the one failure this gate must never cause.
+		blocked := marker + ".blocked"
+		if _, err := os.Stat(blocked); err == nil {
+			recordSearchAfterContext()
+			return 0
+		}
 		if _, err := os.Stat(marker); err == nil {
 			// The gate is open, so find_context has already answered in this
 			// session and the agent is searching anyway. That is the one signal
@@ -76,6 +87,7 @@ func RunHook(args []string) int {
 			recordSearchAfterContext()
 			return 0
 		}
+		_ = os.WriteFile(blocked, []byte("1"), 0o644)
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
 	case "post-search":
