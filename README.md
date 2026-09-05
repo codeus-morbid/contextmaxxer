@@ -151,6 +151,48 @@ also backfill embeddings in the background.
 
 ## Measured results
 
+### SWE-Explore: an external benchmark with published baselines
+
+Everything else in this section is our own measurement. This one is not:
+[SWE-Explore](https://arxiv.org/html/2606.07297v1) hands an explorer an issue
+and a repository snapshot and grades the ranked `(file, start, end)` regions it
+returns against line-level ground truth distilled from the trajectories of
+agents that actually solved the task — what a solver had to READ, not what the
+patch changed. Every baseline below is the paper's own number.
+
+780 of 848 instances (92%), line budget B = 500, served defaults:
+
+| | **Contextmaxxer** | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| HitFile | **0.523** | 0.079 | 0.140 | 0.088 | 0.544 | 0.667 | 0.923 |
+| Prec | **0.340** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
+| Rec_l | **0.047** | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
+| HitRegion | **0.369** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
+
+Several times every non-agentic retriever, and within reach of
+[CoSIL](https://www.arxiv.org/abs/2503.22424v1) on file coverage — the closest
+comparison in kind, because it localises from a call graph too. CoSIL puts a
+model *inside* the search loop, up to ten calls an issue; here the graph is
+built once at indexing time and a query needs no model at all.
+
+Read the rest honestly:
+
+- **The agents are ahead on precision** (0.598 and 0.581 against 0.340), and
+  CoSIL is ahead on every column. This is not a claim to beat them.
+- **Line recall is our weakest number by an order of magnitude**, and it is a
+  design position rather than a defect: bodies are trimmed to query-relevant
+  windows, so a 500-line budget carries about 90 lines. Filling it is possible
+  and costs precision — the paper's own analysis puts context efficiency at
+  r = +0.950 with downstream resolve rate, above every recall measure.
+- **The sample is not yet complete.** Baselines are on all 848 instances, ours
+  on 780; the 68 missing are all django. `pro` and `multilingual` are complete.
+
+Protocol, per-repository breakdown, the sweeps, and the seven things that were
+tried against the ceiling and failed are in
+[docs/research/swe-explore.md](docs/research/swe-explore.md). The dataset is
+CC-BY-NC-ND: numbers may be published, the data is not redistributed and no part
+of it is in this repository.
+
 ### Agent-level discovery
 
 Paired agents answered the same questions on pinned public repositories.
