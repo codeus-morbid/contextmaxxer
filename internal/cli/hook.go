@@ -40,6 +40,9 @@ func RunHook(args []string) int {
 		// run on all three.
 		SessionID      string `json:"session_id"`
 		ConversationID string `json:"conversation_id"`
+		// Cwd is the project the host is working in. The gate needs it to ask
+		// whether this repository has an index at all.
+		Cwd string `json:"cwd"`
 		// ToolResponse is whatever the gated tool returned. Read as raw JSON
 		// because Grep's shape depends on its output_mode, and post-search only
 		// needs a path and a line out of it.
@@ -63,6 +66,13 @@ func RunHook(args []string) int {
 	case "pre-search":
 		if marker == "" {
 			return 0 // can't track the session — never block
+		}
+		// Nothing to send the agent to. Blocking a search in a repository that
+		// was never indexed spends a turn to deliver advice the agent cannot
+		// act on: find_context has no index to answer from. The gate exists to
+		// redirect a search, not to tax one.
+		if !indexPresent(in.Cwd) {
+			return 0
 		}
 		// The gate blocks until find_context has answered once. It must block
 		// AT MOST ONCE, because the marker is written by a PostToolUse hook and
@@ -158,6 +168,24 @@ const hookBlockMessage = "Use find_context first. This repository has a semantic
 	"(\"path/to/file.go:142\", or the whole grep line): that form is an index lookup, " +
 	"not a search, and returns the enclosing symbol with its callers and callees, " +
 	"which grep cannot give you. [Contextmaxxer discovery gate]"
+
+// indexPresent reports whether this repository looks indexed.
+//
+// It checks for the file rather than opening it: the hook runs on every gated
+// tool call and must stay fast and dependency-free, and a corrupt index is
+// already handled by the gate blocking at most once. A custom --index path is
+// not read from the host config for the same reason; the default location is
+// what `init` writes, and being wrong here fails open rather than shut.
+func indexPresent(cwd string) bool {
+	if cwd == "" {
+		var err error
+		if cwd, err = os.Getwd(); err != nil {
+			return true // cannot tell: behave as before rather than silently disable the gate
+		}
+	}
+	st, err := os.Stat(filepath.Join(cwd, ".contextmaxxer", "index.db"))
+	return err == nil && st.Size() > 0
+}
 
 // hookMarkerPath returns a per-session marker file path, or "" if there is no
 // session id (in which case the gate fails open).
