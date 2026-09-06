@@ -22,10 +22,17 @@ import (
 // is `export`, which copies the feedback log (optionally redacted) into a single
 // file ready to hand back to the maintainer for ranker training.
 func RunFeedback(ctx context.Context, args []string, log *slog.Logger) error {
-	if len(args) == 0 || args[0] != "export" {
-		return fmt.Errorf("usage: contextmaxxer feedback export [path] [-redact] [-o out.jsonl]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: contextmaxxer feedback <export|adoption>")
 	}
-	return runFeedbackExport(ctx, args[1:], log)
+	switch args[0] {
+	case "export":
+		return runFeedbackExport(ctx, args[1:], log)
+	case "adoption":
+		return runFeedbackAdoption(args[1:])
+	default:
+		return fmt.Errorf("usage: contextmaxxer feedback <export|adoption>")
+	}
 }
 
 func runFeedbackExport(_ context.Context, args []string, log *slog.Logger) error {

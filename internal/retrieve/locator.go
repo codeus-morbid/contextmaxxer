@@ -68,6 +68,18 @@ func parseLocator(q string) (locator, bool) {
 	return loc, true
 }
 
+// LooksLikeLocator reports whether a query is written as a position rather than
+// a sentence. Exported so adoption reporting classifies queries by the same rule
+// the pipeline routes them with: two copies of this question disagreeing is how
+// a measurement ends up describing something the product does not do.
+//
+// It answers the shape only. Whether the path resolves is a question for the
+// index, and the pipeline asks it separately.
+func LooksLikeLocator(query string) bool {
+	_, ok := parseLocator(query)
+	return ok
+}
+
 // looksLikePath rejects ordinary words before any index work happens. A path
 // has a separator or a short extension, and never a space.
 func looksLikePath(s string) bool {

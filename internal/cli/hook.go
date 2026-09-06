@@ -98,6 +98,7 @@ func RunHook(args []string) int {
 			return 0
 		}
 		_ = os.WriteFile(blocked, []byte("1"), 0o644)
+		recordHookObservation(feedback.OutcomeGateBlocked, "")
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
 	case "post-search":
@@ -120,6 +121,7 @@ func RunHook(args []string) int {
 			return 0 // no path in the output: nothing concrete to suggest
 		}
 		_ = os.WriteFile(nudged, []byte("1"), 0o644)
+		recordHookObservation(feedback.OutcomeNudgeShown, loc)
 		emitAdditionalContext(fmt.Sprintf(
 			"That grep hit can be handed straight to find_context: query %q. "+
 				"A position is looked up, not searched — it returns the symbol "+
@@ -202,6 +204,21 @@ func hookMarkerPath(sessionID string) string {
 // the next command; attributing a search to a retrieval from before lunch would
 // manufacture signal rather than record it.
 const searchAfterContextWindow = 5 * time.Minute
+
+// recordHookObservation writes what a hook saw into the same log the served
+// retrievals go to, so `feedback adoption` can line the two up without a second
+// file or a second format. Same best-effort rule as everything else here: a
+// logging failure must never delay the agent's tool call.
+func recordHookObservation(outcome, note string) {
+	path := os.Getenv("CONTEXTMAXXER_FEEDBACK_LOG")
+	if path == "" {
+		path = filepath.Join(".contextmaxxer", "feedback.jsonl")
+	}
+	if path == "none" {
+		return
+	}
+	_ = feedback.RecordHookEvent(path, outcome, note)
+}
 
 // recordSearchAfterContext is best-effort by construction. The hook runs on
 // every gated tool call and must stay fast and fail open — a logging problem
