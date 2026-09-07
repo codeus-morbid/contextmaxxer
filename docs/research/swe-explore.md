@@ -500,6 +500,58 @@ or reranking on the path. That is composition rather than substitution: grep
 says where a name occurs, the graph says what reaches it, and the measurement
 above says competing with grep on the first question is not worth doing.
 
+## The two retrieval gaps, taken apart
+
+The decomposition above leaves two gaps of similar size — 13.1% of gold files in
+the response below rank 20, and 14.3% never retrieved at all — and treats them
+as one "retrieval problem". They are not the same problem and neither behaves as
+expected.
+
+**Reranking deeper makes the answer worse.** The ablation that reported "the
+cross-encoder buys no reach" ran with `rerank_k` 15 against `max_results` 20: it
+could not promote a candidate at rank 50 because it never saw one. Giving it the
+pool, over 300 instances at a fixed answer size:
+
+| rerank_k | HitFile | Prec | paired against 20 |
+|---:|---:|---:|---|
+| **20** | **0.556** | **0.346** | — |
+| 100 | 0.475 | 0.302 | **-0.081, t = -6.84** (20 better / 93 worse) |
+| 200 | 0.455 | 0.281 | **-0.101, t = -7.77** (25 better / 111 worse) |
+
+So the narrow window is not the cross-encoder's handicap, it is its protection.
+Handed two hundred candidates it promotes what looks superficially like 850
+characters of issue prose and demotes what the fusion — vector, FTS and PageRank
+together — had ranked correctly. **On this query shape the fusion is the better
+ranker and the reranker is a local polish**, which is the opposite of what the
+"+0.036 precision" line suggests in isolation. The 13.1% is therefore not a
+cheap ranking win: the files are reachable and our ranker cannot pick them out.
+
+**The never-retrieved 14.3% is mostly vocabulary, but not entirely.**
+[`cmd/reachprobe`](../../cmd/reachprobe) asks, for each gold file the index
+holds, whether the query's code identifiers appear in it — and reports the same
+statistic over the files we DID retrieve, because the missed figure means
+nothing alone:
+
+| | files | identifiers in the file | in the text we index | on disk only |
+|---|---:|---:|---:|---:|
+| retrieved (control) | 431 | 77.0% | 75.9% | 1.2% |
+| never retrieved | 52 | 40.4% | 30.8% | 9.6% |
+
+Roughly 60% of the missed files share no vocabulary with the query at all — only
+a better representation reaches those. About 31% have the words **in the indexed
+text** and are still not among two hundred results, which is a lexical problem
+and the one cheap lever left standing. The remaining 10% have the words on disk
+but outside what we index, eight times the control rate, which points back at
+the body cap rather than at any model.
+
+The control line carries its own answer to "is the embedder too weak": for the
+files we do retrieve the identifiers are present only 77% of the time, so a
+quarter of our hits are semantic matches with no lexical overlap at all. The
+embedder is working; it is not omnipotent on a query that describes a symptom
+against code that implements a mechanism.
+
+n = 52 on the missed row, so the shares carry about ±7 points.
+
 ## Where a region miss actually happens
 
 HitRegion divided by HitFile is 0.71 for us, 1.00 for CoSIL, 0.80 for Claude
