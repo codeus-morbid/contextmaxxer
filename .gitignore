@@ -26,6 +26,7 @@ internal/eval/out/
 .claude/rules/
 .codex/
 .cursor/mcp.json
+.cursor/hooks.json
 .cursor/*-mcp.cmd
 /docs/superpowers/
 /CURSOR-BENCH.md

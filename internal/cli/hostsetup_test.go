@@ -319,7 +319,7 @@ func TestShellCommandPathSurvivesAShell(t *testing.T) {
 	// treats backslashes as escapes, so a Windows path arrives as
 	// "C:Usersdev...exe" and the hook fails silently. Every hook written on
 	// Windows before this was dead on arrival.
-	got := shellCommandPath(`C:\Users\dev\Development\Contextmaxxer\dist\contextmaxxer.exe`)
+	got := shellCommandPath(`C:\Users\dev\Contextmaxxer\dist\contextmaxxer.exe`)
 	if strings.Contains(got, `\`) {
 		t.Fatalf("a backslash survived into a shell command: %s", got)
 	}
@@ -364,12 +364,12 @@ func TestMergeClaudeHooksRepairsAPreFixInstall(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	// The JSON on disk carries escaped backslashes, which is what a pre-fix
 	// install looks like.
-	seed := `{"hooks":{"PreToolUse":[{"matcher":"Grep|Glob","hooks":[{"type":"command","command":"C:\\Users\\B\\dist\\ctx.exe hook pre-search"}]}]}}`
+	seed := `{"hooks":{"PreToolUse":[{"matcher":"Grep|Glob","hooks":[{"type":"command","command":"C:\\Users\\dev\\dist\\ctx.exe hook pre-search"}]}]}}`
 	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	changed, err := mergeClaudeHooks(path, "C:/Users/B/dist/ctx.exe")
+	changed, err := mergeClaudeHooks(path, "C:/Users/dev/dist/ctx.exe")
 	if err != nil || !changed {
 		t.Fatalf("a broken install must be reported as changed: changed=%v err=%v", changed, err)
 	}
@@ -377,12 +377,12 @@ func TestMergeClaudeHooksRepairsAPreFixInstall(t *testing.T) {
 	if strings.Contains(string(data), `\`) {
 		t.Fatalf("backslash path survived the repair:\n%s", data)
 	}
-	if !strings.Contains(string(data), "C:/Users/B/dist/ctx.exe hook pre-search") {
+	if !strings.Contains(string(data), "C:/Users/dev/dist/ctx.exe hook pre-search") {
 		t.Fatalf("repaired command missing:\n%s", data)
 	}
 
 	// Still idempotent once repaired.
-	changed, err = mergeClaudeHooks(path, "C:/Users/B/dist/ctx.exe")
+	changed, err = mergeClaudeHooks(path, "C:/Users/dev/dist/ctx.exe")
 	if err != nil || changed {
 		t.Fatalf("second run must be a no-op: changed=%v err=%v", changed, err)
 	}
