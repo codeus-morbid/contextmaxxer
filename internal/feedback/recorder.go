@@ -242,6 +242,11 @@ func (r *Recorder) RecordRetrieval(event RetrievalEvent) error {
 	if r.logAll {
 		return r.append(event)
 	}
+	// Adoption telemetry goes to its own file, never here. This log is training
+	// data — retrievals paired with the labels that judge them — and mixing a
+	// per-call counter into it breaks that: the first attempt did, and two
+	// existing tests caught it by asserting exactly what this log may contain.
+	_ = recordServed(r.path, LooksPositional(event.Query))
 	r.holdRetrieval(event)
 	return nil
 }

@@ -14,16 +14,21 @@ func TestComputeAdoption(t *testing.T) {
 	ev := func(d time.Duration, event, query, outcome string) logEvent {
 		return logEvent{Event: event, Time: t0.Add(d), Query: query, Outcome: outcome}
 	}
+	// A served event carries the shape, not the query: the classification is
+	// made once at serve time by the same rule the pipeline routes on.
+	served := func(d time.Duration, positional bool) logEvent {
+		return logEvent{Event: "served", Time: t0.Add(d), Positional: positional}
+	}
 	events := []logEvent{
 		ev(0, "hook", "", feedback.OutcomeNudgeShown),
 		// Acted on two minutes later: this is the conversion being measured.
-		ev(2*time.Minute, "retrieval", "src/topics/posts.js:142", ""),
+		served(2*time.Minute, true),
 		ev(time.Hour, "hook", "", feedback.OutcomeNudgeShown),
 		// A sentence is not a conversion, however soon it arrives.
-		ev(time.Hour+time.Minute, "retrieval", "how are recent topics sorted", ""),
+		served(time.Hour+time.Minute, false),
 		// A position half an hour later is outside the window: the nudge that
 		// preceded it must not be credited.
-		ev(time.Hour+30*time.Minute, "retrieval", "src/other.js:9", ""),
+		served(time.Hour+30*time.Minute, true),
 		ev(2*time.Hour, "hook", "", feedback.OutcomeGateBlocked),
 		ev(2*time.Hour, "feedback", "", feedback.OutcomeSearchedAfterContext),
 	}
@@ -54,7 +59,7 @@ func TestComputeAdoption_OneActionCreditsEveryOpenNudge(t *testing.T) {
 	events := []logEvent{
 		{Event: "hook", Time: t0, Outcome: feedback.OutcomeNudgeShown},
 		{Event: "hook", Time: t0.Add(time.Minute), Outcome: feedback.OutcomeNudgeShown},
-		{Event: "retrieval", Time: t0.Add(2 * time.Minute), Query: "internal/retrieve/locator.go:73"},
+		{Event: "served", Time: t0.Add(2 * time.Minute), Positional: true},
 	}
 	st := computeAdoption(events, 10*time.Minute)
 	if st.nudgesFollow != 2 {

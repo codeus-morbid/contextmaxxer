@@ -19,6 +19,7 @@ import (
 	mcpsrv "github.com/codeus-morbid/contextmaxxer/internal/mcp"
 	"github.com/codeus-morbid/contextmaxxer/internal/releasecfg"
 	"github.com/codeus-morbid/contextmaxxer/internal/rerank"
+	"github.com/codeus-morbid/contextmaxxer/internal/retrieve"
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
 	"github.com/codeus-morbid/contextmaxxer/internal/store/sqlite"
 )
@@ -151,6 +152,12 @@ func RunMCP(ctx context.Context, args []string, log *slog.Logger) error {
 			log.Info("embedding backfill complete", "embedded", n)
 		}
 	}()
+
+	// One rule decides what counts as a position: the pipeline routes on it and
+	// the adoption report counts on it. Installed here, at the composition root,
+	// rather than duplicated — two copies of this question disagreeing is how a
+	// measurement ends up describing something the product does not do.
+	feedback.LooksPositional = retrieve.LooksLikeLocator
 
 	srv := mcpsrv.NewServerWithOptions(r, feedback.NewRecorder(feedbackPath), mcpsrv.Options{AdaptiveRerank: *adaptiveRerank, LazyRerank: *lazyRerank}, log)
 	return srv.Serve(ctx)

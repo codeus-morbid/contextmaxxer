@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/feedback"
-	"github.com/codeus-morbid/contextmaxxer/internal/retrieve"
 )
 
 // `contextmaxxer feedback adoption` answers the one question the benchmarks
@@ -46,24 +45,26 @@ func defaultFeedbackLogPath() string {
 }
 
 type adoptionStats struct {
-	retrievals   int
-	positional   int
-	nudges       int
-	nudgesFollow int
-	gateBlocks   int
-	searchAfter  int
-	first, last  time.Time
-	window       time.Duration
+	retrievals       int
+	positional       int
+	nudges           int
+	nudgesFollow     int
+	gateBlocks       int
+	searchAfter      int
+	legacyRetrievals int
+	first, last      time.Time
+	window           time.Duration
 }
 
 // logEvent is the union of the two shapes the log holds, read loosely on
 // purpose: an unknown or future event kind must be skipped, not fatal, because
 // this reads a file that older and newer builds also write.
 type logEvent struct {
-	Event   string    `json:"event"`
-	Time    time.Time `json:"time"`
-	Query   string    `json:"query"`
-	Outcome string    `json:"outcome"`
+	Event      string    `json:"event"`
+	Time       time.Time `json:"time"`
+	Query      string    `json:"query"`
+	Outcome    string    `json:"outcome"`
+	Positional bool      `json:"positional"`
 }
 
 func runFeedbackAdoption(args []string) error {
@@ -91,7 +92,8 @@ func runFeedbackAdoption(args []string) error {
 	// the moment the log filled up.
 	var events []logEvent
 	read := 0
-	for _, p := range []string{feedback.RotatedPath(path), path} {
+	// Telemetry lives beside the feedback log, not inside it.
+	for _, p := range []string{feedback.AdoptionPath(path)} {
 		evs, err := readLogEvents(p)
 		if err != nil {
 			continue
@@ -126,8 +128,14 @@ func computeAdoption(events []logEvent, window time.Duration) adoptionStats {
 		}
 		switch {
 		case e.Event == "retrieval":
+			// Legacy shape. A retrieval reaches the log only once a hook
+			// observes an outcome for it, so these cannot be counted as calls
+			// without quietly changing what "calls" means — they are reported
+			// on their own line instead.
+			st.legacyRetrievals++
+		case e.Event == "served":
 			st.retrievals++
-			if retrieve.LooksLikeLocator(e.Query) {
+			if e.Positional {
 				st.positional++
 				// Credit every nudge still inside the window: the agent may
 				// have been nudged twice before acting once, and dropping the
@@ -161,7 +169,7 @@ func printAdoption(w io.Writer, path string, st adoptionStats) {
 		}
 		return fmt.Sprintf("%5.1f%%", 100*float64(a)/float64(b))
 	}
-	fmt.Fprintf(w, "Adoption, from %s (+ rotated generation)\n", path)
+	fmt.Fprintf(w, "Adoption, from %s\n", path)
 	if !st.first.IsZero() {
 		fmt.Fprintf(w, "  covering %s .. %s\n",
 			st.first.Local().Format("2006-01-02 15:04"), st.last.Local().Format("2006-01-02 15:04"))

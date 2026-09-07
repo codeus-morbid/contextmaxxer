@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,14 +75,27 @@ func RunHook(args []string) int {
 		if !indexPresent(in.Cwd) {
 			return 0
 		}
-		// The gate blocks until find_context has answered once. It must block
-		// AT MOST ONCE, because the marker is written by a PostToolUse hook and
-		// that hook does not run when the tool call FAILS — verified live: a
-		// find_context against a corrupt index left no marker. Blocking on every
-		// search would then lock the agent out of both tools for the rest of the
-		// session, which is the one failure this gate must never cause.
+		// The gate blocks until find_context has answered, but only for a
+		// bounded number of searches.
+		//
+		// Both bounds are there because both failures were observed. Blocking
+		// forever deadlocks the agent: the marker that opens the gate is written
+		// by a PostToolUse hook, and that hook does not run when the tool call
+		// FAILS, so a find_context against a corrupt index leaves the agent with
+		// neither search tool for the rest of the session. Blocking exactly once
+		// is toothless: a subagent given a real navigation task was blocked and
+		// simply repeated the same grep 0.6 seconds later, which went through,
+		// and it answered without ever calling find_context.
+		//
+		// DECISION(2026-09): three. One is defeated by a retry; unbounded is the
+		// deadlock. Three costs a stuck agent three turns and makes "just try
+		// again" stop working, which is what the retry was betting on.
+		// ASSUMES: an agent that ignores three blocks was never going to call
+		// the tool, and taxing it further only wastes its turns.
+		// REVISIT IF: the adoption report shows blocks converting at a rate that
+		// justifies more of them.
 		blocked := marker + ".blocked"
-		if _, err := os.Stat(blocked); err == nil {
+		if gateBlocksSoFar(blocked) >= gateBlockBudget {
 			recordSearchAfterContext()
 			return 0
 		}
@@ -97,7 +111,7 @@ func RunHook(args []string) int {
 			recordSearchAfterContext()
 			return 0
 		}
-		_ = os.WriteFile(blocked, []byte("1"), 0o644)
+		recordGateBlock(blocked)
 		recordHookObservation(feedback.OutcomeGateBlocked, "")
 		fmt.Fprintln(os.Stderr, hookBlockMessage)
 		return 2
@@ -157,7 +171,14 @@ func RunHook(args []string) int {
 // +0.036. The opposite extreme is worse than either: stripping the query down
 // to bare identifiers dropped file reach from 0.515 to 0.434, because the
 // embedder needs a phrase, not a bag of names.
-const hookBlockMessage = "Use find_context first. This repository has a semantic code-search tool " +
+// The "repeating this will be blocked too" clause is measured, not a threat: a
+// subagent given a real navigation task was blocked, repeated the identical grep
+// 0.6 seconds later, and answered the question without ever calling the tool.
+// Nothing had told it the retry was pointless, so it took the cheapest path
+// available — which is exactly what a good agent should do.
+const hookBlockMessage = "Use find_context first. Repeating this same search will be blocked again, " +
+	"so retrying is not the way through — one find_context call opens it. " +
+	"This repository has a semantic code-search tool " +
 	"(the find_context MCP tool) that locates code in one call with caller/callee graph " +
 	"context — call it before grep/glob when you need to find code, understand how something " +
 	"works, or trace a call path. Phrase the query in the vocabulary the code would use " +
@@ -170,6 +191,29 @@ const hookBlockMessage = "Use find_context first. This repository has a semantic
 	"(\"path/to/file.go:142\", or the whole grep line): that form is an index lookup, " +
 	"not a search, and returns the enclosing symbol with its callers and callees, " +
 	"which grep cannot give you. [Contextmaxxer discovery gate]"
+
+// gateBlockBudget is how many searches the gate turns away before it gives up.
+// See the DECISION at its use.
+const gateBlockBudget = 3
+
+// gateBlocksSoFar reads the per-session block count. An unreadable or corrupt
+// marker counts as zero: the gate failing open is a wasted nudge, the gate
+// failing shut is an agent with no way to search.
+func gateBlocksSoFar(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func recordGateBlock(path string) {
+	_ = os.WriteFile(path, []byte(strconv.Itoa(gateBlocksSoFar(path)+1)), 0o644)
+}
 
 // indexPresent reports whether this repository looks indexed.
 //

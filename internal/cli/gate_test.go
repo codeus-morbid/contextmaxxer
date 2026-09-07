@@ -62,12 +62,16 @@ func runPreSearchIn(t *testing.T, sessionID, cwd string) (code int, stderr strin
 	return code, string(data)
 }
 
-func TestGateBlocksOnceAndThenGetsOutOfTheWay(t *testing.T) {
-	// The deadlock this guards, seen live: the marker that opens the gate is
-	// written by a PostToolUse hook, and that hook does not run when the tool
-	// call FAILS. Against a corrupt index find_context errors, no marker is
-	// written, and a gate that blocked every time would leave the agent with
-	// neither search tool for the rest of the session.
+func TestGateBlocksUpToItsBudgetThenGetsOutOfTheWay(t *testing.T) {
+	// Two failures are guarded here, and both were seen live.
+	//
+	// Blocking forever deadlocks: the marker that opens the gate is written by a
+	// PostToolUse hook, and that hook does not run when the tool call FAILS, so
+	// find_context against a corrupt index leaves the agent with neither tool.
+	//
+	// Blocking once is toothless: a subagent on a real navigation task was
+	// blocked, repeated the identical grep 0.6 seconds later, and answered
+	// without ever calling find_context.
 	session := "gate-test-" + t.Name()
 	marker := hookMarkerPath(session)
 	t.Cleanup(func() {
@@ -78,21 +82,27 @@ func TestGateBlocksOnceAndThenGetsOutOfTheWay(t *testing.T) {
 	os.Remove(marker)
 	os.Remove(marker + ".blocked")
 
-	code, stderr := runPreSearch(t, session)
-	if code != 2 {
-		t.Fatalf("first search must be blocked, got exit %d", code)
-	}
-	if !strings.Contains(stderr, "Use find_context first") {
-		t.Fatalf("block message missing: %q", stderr)
+	for i := 1; i <= gateBlockBudget; i++ {
+		code, stderr := runPreSearch(t, session)
+		if code != 2 {
+			t.Fatalf("search %d of the budget must be blocked, got exit %d", i, code)
+		}
+		if !strings.Contains(stderr, "Use find_context first") {
+			t.Fatalf("block message missing on search %d: %q", i, stderr)
+		}
+		// Retrying must not look like a way through, or the agent will take it.
+		if !strings.Contains(stderr, "blocked again") {
+			t.Fatalf("the message must say a retry is blocked too: %q", stderr)
+		}
 	}
 
 	// find_context never succeeded, so the gate marker still does not exist.
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("test setup wrong: the gate marker should not exist")
 	}
-	code, _ = runPreSearch(t, session)
+	code, _ := runPreSearch(t, session)
 	if code != 0 {
-		t.Fatalf("second search must pass even though find_context never answered, got exit %d", code)
+		t.Fatalf("past the budget the search must pass even though find_context never answered, got exit %d", code)
 	}
 }
 
