@@ -5,6 +5,24 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # onnxruntime_go is pinned on purpose, not stale. The binding declares the
+      # ORT_API_VERSION it requires, and that must not exceed what the pinned
+      # native runtime provides: the DirectML build ships only through the
+      # Microsoft.ML.OnnxRuntime.DirectML NuGet package, which trails the main
+      # release line at 1.24.4 (API 24). See the DECISION in
+      # internal/embed/model.go. Anything past 1.27.x asks for a newer API and
+      # the server dies at startup with "Error setting ORT API base" — while
+      # building clean and passing every test.
+      #
+      # Patch releases stay allowed: they do not move ORT_API_VERSION, and the
+      # MCP handshake step in CI now fails the build if one ever does. Lift this
+      # when the DirectML package catches up and the pinned versions in
+      # internal/embed/model.go move with it.
+      - dependency-name: "github.com/yalue/onnxruntime_go"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
   - package-ecosystem: github-actions
     directory: /
     schedule:
