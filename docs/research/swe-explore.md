@@ -566,13 +566,37 @@ in advance:
 | Prec | -0.0040 | -0.88 | 100 / 90 |
 | HitRegion | -0.0034 | -0.75 | 10 / 13 |
 
-Seeing the files was never the constraint. The seed pool holds twenty, and a
-fifth channel's votes push out candidates the other four had right: fifteen
-instances gain, twenty-eight lose. **That is the third appearance of one
-mechanism** — merging grep candidates into the answer, reranking a deeper pool,
-and now this — all of them trading a better source for a worse one at a fixed
-budget. It ships off, in `internal/retrieve/seeding.go`, with the numbers in
-place.
+The first reading was displacement: the seed pool holds twenty, and a fifth
+channel's votes push out candidates the other four had right. That reading is
+wrong, and the test that settles it had never been run — the "pool 20 -> 200
+changes nothing" sweep predates the channel, so the two had only ever been
+measured apart. At a pool of sixty:
+
+| | delta | t | better / worse |
+|---|---:|---:|---|
+| channel at pool 20 | -0.0135 | -2.11 | 15 / 28 |
+| channel at pool 60 | -0.0096 | -2.07 | 11 / 23 |
+| the pool alone, 60 vs 20, no channel | -0.0032 | -0.45 | 33 / 34 |
+
+Tripling the room leaves the shape untouched, and the pool on its own is neutral
+— so nothing was being crowded out and the personalization vector was not
+diluted either. **The added signal is simply worse than what it replaces.**
+
+The channel's own measurement says why. The wanted file sits at FTS rank 34,
+which means an OR over eight identifiers ranks *thirty-three wrong files above
+it*, and each of those votes in the fusion as well. The channel is precise about
+the file we want and noisy about everything else, and RRF cannot tell the two
+apart. Requiring two identifiers to agree before a file counts is the same idea
+one step further, and that was measured separately as the literal channel: also
+negative.
+
+**This is the third appearance of one mechanism, and now it has an explanation
+rather than three separate nulls.** Merging grep candidates into the answer,
+reranking a deeper pool, and adding an identifier seed channel all add a source
+that looks precise in isolation and is worse in aggregate than the existing
+combination of vector, prose and graph. On an 850-character issue report the
+fusion we already have beats any single signal we can add to it locally — which
+is also why the seven earlier attempts returned nothing.
 
 ## Where a region miss actually happens
 

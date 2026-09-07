@@ -143,10 +143,21 @@ func seedCandidates(ctx context.Context, r *Retriever, req Request, qvec []float
 		// right. It is the third time the same mechanism has appeared: merging
 		// grep candidates, reranking a deeper pool, and now this all trade a
 		// better source for a worse one at a fixed budget.
+		// And it is not displacement. Tripling the pool to sixty leaves the shape
+		// unchanged — better on 11, worse on 23, against 15 and 28 at twenty —
+		// while the pool on its own is neutral (t = -0.45), so nothing was being
+		// crowded out and no personalization was diluted. The added signal is
+		// simply worse than what it replaces.
+		//
+		// Which the channel's own numbers explain: the wanted file sits at FTS
+		// rank 34, so an OR over eight identifiers ranks THIRTY-THREE wrong files
+		// above it, and every one of those votes in the fusion too. Precise about
+		// the file we want, noisy about everything else.
+		//
 		// Stays off, and stays here so the next person to have the idea finds it
 		// already measured.
-		// REVISIT IF: the seed pool stops being a fixed twenty, which is the
-		// constraint that actually decided this.
+		// REVISIT IF: identifier extraction gets precise enough that the wanted
+		// file lands near rank 1 rather than 34.
 		if DefaultIdentFTSWeight > 0 {
 			if ids := queryIdentifiers(req.Query, identFTSTerms); len(ids) >= 2 {
 				iSeeds, err := r.store.SearchByText(ctx, strings.Join(ids, " "), identFTSSeedK)
