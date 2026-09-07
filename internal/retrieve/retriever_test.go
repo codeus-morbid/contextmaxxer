@@ -14,12 +14,18 @@ import (
 )
 
 type mockStore struct {
-	symbols        []store.Symbol
-	edges          []store.Edge
-	ids            []int64
-	filePaths      map[int64]string
-	ftsResult      []store.ScoredSymbol
-	ftsByQuery     map[string][]store.ScoredSymbol
+	symbols    []store.Symbol
+	edges      []store.Edge
+	ids        []int64
+	filePaths  map[int64]string
+	ftsResult  []store.ScoredSymbol
+	ftsByQuery map[string][]store.ScoredSymbol
+	// onSearchByText lets a test observe WHAT was asked, not just what came back.
+	onSearchByText func(query string)
+	// vecResult pins what the vector channel returns. Without it the stub hands
+	// back every symbol, which makes "unreachable except through channel X"
+	// untestable — the vector channel would have found it anyway.
+	vecResult      []store.ScoredSymbol
 	bodyFTSResult  []store.ScoredSymbol
 	chunkVecResult []store.ScoredSymbol
 	// metaCache mirrors production, where ListSymbolMeta is served from a cache
@@ -30,6 +36,9 @@ type mockStore struct {
 }
 
 func (m *mockStore) SearchByVectorScored(_ context.Context, _ []float32, k int) ([]store.ScoredSymbol, error) {
+	if m.vecResult != nil {
+		return m.vecResult, nil
+	}
 	var out []store.ScoredSymbol
 	for i, sym := range m.symbols {
 		if i >= k {
@@ -97,6 +106,9 @@ func (m *mockStore) ListAllEdges(_ context.Context) ([]store.Edge, error) {
 }
 
 func (m *mockStore) SearchByText(_ context.Context, query string, _ int) ([]store.ScoredSymbol, error) {
+	if m.onSearchByText != nil {
+		m.onSearchByText(query)
+	}
 	// ftsByQuery lets a test give different terms different hits, which is what
 	// the literal channel is about: agreement BETWEEN identifiers in one file.
 	if m.ftsByQuery != nil {

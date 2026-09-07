@@ -552,6 +552,28 @@ against code that implements a mechanism.
 
 n = 52 on the missed row, so the shares carry about ±7 points.
 
+**The lexical lever was built, and it fails for the same reason as the other
+two.** Asked of FTS directly, an identifier-only query puts 75% of those missed
+files inside the top fifty — median rank 34, against median rank 3 for the files
+we do find — so the channel can see them and only the way we ask cannot. A fifth
+seed channel searching the identifiers alone, at its own depth of fifty, was
+added behind a weight and measured over 300 instances with a stopping rule fixed
+in advance:
+
+| | delta | t | better / worse |
+|---|---:|---:|---|
+| File recall | **-0.0135** | **-2.11** | 15 / 28 |
+| Prec | -0.0040 | -0.88 | 100 / 90 |
+| HitRegion | -0.0034 | -0.75 | 10 / 13 |
+
+Seeing the files was never the constraint. The seed pool holds twenty, and a
+fifth channel's votes push out candidates the other four had right: fifteen
+instances gain, twenty-eight lose. **That is the third appearance of one
+mechanism** — merging grep candidates into the answer, reranking a deeper pool,
+and now this — all of them trading a better source for a worse one at a fixed
+budget. It ships off, in `internal/retrieve/seeding.go`, with the numbers in
+place.
+
 ## Where a region miss actually happens
 
 HitRegion divided by HitFile is 0.71 for us, 1.00 for CoSIL, 0.80 for Claude

@@ -3,7 +3,10 @@ package retrieve
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
 )
@@ -116,6 +119,50 @@ func seedCandidates(ctx context.Context, r *Retriever, req Request, qvec []float
 			}
 		}
 
+		// DECISION(2026-09): a fifth channel that searches the query's CODE
+		// IDENTIFIERS alone, at its own depth.
+		//
+		// The other lexical channels are handed the whole question, which on
+		// this benchmark is 850 characters of issue prose. BM25 over a query
+		// that long gives a rare identifier almost nothing, and the file it
+		// would have pinpointed never enters the pool. Measured directly
+		// against FTS: for gold files the pipeline never retrieves even among
+		// two hundred results, an identifier-only query puts 75% inside the top
+		// fifty, median rank 34 — against median rank 3 for the files we do
+		// find. The channel can see them; the way we ask cannot.
+		//
+		// Its depth is deliberately not req.SeedK. At the default twenty this
+		// channel would capture 37% of those files instead of 75%, which is the
+		// whole reason they are missing.
+		//
+		// MEASURED, AND IT DOES NOT WORK. 300 instances, the weight the only
+		// difference: File recall 0.556 -> 0.542, paired -0.0135 at t = -2.11,
+		// better on 15 instances and worse on 28. Precision and HitRegion did not
+		// move. Seeing the files was never the problem — the seed pool holds
+		// twenty, and a fifth channel votes candidates out that the other four had
+		// right. It is the third time the same mechanism has appeared: merging
+		// grep candidates, reranking a deeper pool, and now this all trade a
+		// better source for a worse one at a fixed budget.
+		// Stays off, and stays here so the next person to have the idea finds it
+		// already measured.
+		// REVISIT IF: the seed pool stops being a fixed twenty, which is the
+		// constraint that actually decided this.
+		if DefaultIdentFTSWeight > 0 {
+			if ids := queryIdentifiers(req.Query, identFTSTerms); len(ids) >= 2 {
+				iSeeds, err := r.store.SearchByText(ctx, strings.Join(ids, " "), identFTSSeedK)
+				if err != nil {
+					return seedResult{}, fmt.Errorf("identifier fts seed search: %w", err)
+				}
+				for rank, s := range iSeeds {
+					rrfScores[s.ID] += DefaultIdentFTSWeight / float32(rrfK+rank+1)
+					if _, ok := originMap[s.ID]; !ok {
+						originMap[s.ID] = &seedOrigin{}
+					}
+					originMap[s.ID].fromF = true
+				}
+			}
+		}
+
 		type rrfEntry struct {
 			id    int64
 			score float32
@@ -156,4 +203,27 @@ func seedCandidates(ctx context.Context, r *Retriever, req Request, qvec []float
 		vectorScores: vectorScores,
 		originMap:    originMap,
 	}, nil
+}
+
+// The identifier channel's knobs. Off by default: it is a measured hypothesis,
+// not a shipped default, and CONTEXTMAXXER_IDENT_FTS_WEIGHT turns it on the way
+// CONTEXTMAXXER_CHUNK_VEC_WEIGHT does for the chunk-vector channel.
+var DefaultIdentFTSWeight float32 = 0
+
+const (
+	// identFTSSeedK is how deep this channel looks. The files it exists for sit
+	// at a median FTS rank of 34, so twenty would miss half of them by
+	// construction.
+	identFTSSeedK = 50
+	// identFTSTerms caps how many identifiers form the query. Past a handful the
+	// OR widens faster than it sharpens.
+	identFTSTerms = 8
+)
+
+func init() {
+	if v := os.Getenv("CONTEXTMAXXER_IDENT_FTS_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f >= 0 {
+			DefaultIdentFTSWeight = float32(f)
+		}
+	}
 }
