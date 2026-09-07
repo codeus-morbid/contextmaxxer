@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/evalharness"
@@ -110,7 +111,11 @@ func main() {
 	bin := flag.String("bin", "dist/contextmaxxer.exe", "served binary under test")
 	deep := flag.Int("deep", 200, "how many results count as 'retrieved at all'")
 	n := flag.Int("n", 0, "score at most this many instances (0 = all)")
+	ftsRankMode := flag.Bool("fts-rank", false, "also ask FTS, with the identifiers alone, where it would put each gold file")
 	flag.Parse()
+	if *ftsRankMode {
+		ftsRanks = &rankPair{}
+	}
 
 	instances, err := loadManifest(*manifestPath)
 	if err != nil {
@@ -184,6 +189,18 @@ func main() {
 			if onDisk && !inIdx {
 				t.onlyOnDisk++
 			}
+			// The lever this probe is deciding: for a file the lexical channel
+			// COULD match, where would a query of the identifiers alone put it?
+			// Asked of FTS directly rather than through the pipeline, so the
+			// vector channel and the graph cannot answer for it.
+			if inIdx && ftsRanks != nil {
+				r := ftsRankOf(indexPath, ids, gp)
+				if retrieved[gp] {
+					ftsRanks.found = append(ftsRanks.found, r)
+				} else {
+					ftsRanks.missed = append(ftsRanks.missed, r)
+				}
+			}
 		}
 		if scored%25 == 0 {
 			fmt.Fprintf(os.Stderr, "  %d instances...\n", scored)
@@ -194,6 +211,11 @@ func main() {
 	fmt.Printf("gold files not in the index at all: %d (a corpus question, excluded below)\n\n", notIndexed)
 	fmt.Println(found.line("RETRIEVED (the control)"))
 	fmt.Println(missed.line("NEVER RETRIEVED"))
+	if ftsRanks != nil {
+		fmt.Println("\nWhere a query of the identifiers ALONE puts the file, asked of FTS directly:")
+		reportRanks("retrieved (control)", ftsRanks.found)
+		reportRanks("never retrieved", ftsRanks.missed)
+	}
 	fmt.Printf(`
 Read the two lines against each other, not alone.
   missed "in file" near the control  -> the words are there and we still miss
@@ -284,4 +306,115 @@ func loadManifest(path string) ([]instance, error) {
 		out = append(out, in)
 	}
 	return out, sc.Err()
+}
+
+// rankPair holds where a pure identifier query lands the gold file, for the
+// files we retrieved and for the ones we did not.
+type rankPair struct{ found, missed []int }
+
+var ftsRanks *rankPair
+
+// ftsRankOf asks the index's own FTS, with a query of nothing but the code
+// identifiers, at what position the gold file first appears. -1 means it does
+// not appear within the scanned depth.
+//
+// The query is built the way internal/store/sqlite builds one — each term
+// quoted, joined with OR — so this measures the channel as it is, not an
+// idealized version of it.
+func ftsRankOf(indexPath string, ids []string, gold string) int {
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(indexPath)+"?mode=ro")
+	if err != nil {
+		return -1
+	}
+	defer db.Close()
+
+	var b strings.Builder
+	for i, id := range ids {
+		if !singleToken(id) {
+			continue
+		}
+		if b.Len() > 0 {
+			_ = i
+			b.WriteString(" OR ")
+		}
+		b.WriteByte('"')
+		b.WriteString(id)
+		b.WriteByte('"')
+	}
+	if b.Len() == 0 {
+		return -1
+	}
+	const depth = 500
+	for _, q := range []string{
+		`SELECT f.path FROM symbol_fts x JOIN symbols s ON s.id = x.rowid
+		 JOIN files f ON f.id = s.file_id WHERE symbol_fts MATCH ? ORDER BY rank LIMIT ?`,
+		`SELECT f.path FROM symbol_body_fts x JOIN symbols s ON s.id = x.rowid
+		 JOIN files f ON f.id = s.file_id WHERE symbol_body_fts MATCH ? ORDER BY rank LIMIT ?`,
+	} {
+		rows, err := db.Query(q, b.String(), depth)
+		if err != nil {
+			continue
+		}
+		seen := map[string]bool{}
+		pos := 0
+		for rows.Next() {
+			var p string
+			if rows.Scan(&p) != nil {
+				continue
+			}
+			p = norm(p)
+			if seen[p] {
+				continue // rank the FILE, not each of its symbols
+			}
+			seen[p] = true
+			pos++
+			if p == gold {
+				rows.Close()
+				return pos
+			}
+		}
+		rows.Close()
+	}
+	return -1
+}
+
+func singleToken(s string) bool {
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '_' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+func reportRanks(name string, xs []int) {
+	if len(xs) == 0 {
+		fmt.Printf("  %-26s (none)\n", name)
+		return
+	}
+	var in20, in50, absent int
+	var present []int
+	for _, x := range xs {
+		switch {
+		case x < 0:
+			absent++
+		default:
+			present = append(present, x)
+			if x <= 20 {
+				in20++
+			}
+			if x <= 50 {
+				in50++
+			}
+		}
+	}
+	sort.Ints(present)
+	med := 0
+	if len(present) > 0 {
+		med = present[len(present)/2]
+	}
+	p := func(a int) float64 { return 100 * float64(a) / float64(len(xs)) }
+	fmt.Printf("  %-26s n=%3d | top-20 %5.1f%% | top-50 %5.1f%% | median rank %4d | absent %5.1f%%\n",
+		name, len(xs), p(in20), p(in50), med, p(absent))
 }
