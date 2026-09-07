@@ -81,6 +81,7 @@ func main() {
 		trimGaps, trimSymLines            []int
 		trimInnerLines                    []int
 		trimHadFiner                      int
+		trimFinerReturned                 int
 		fileMissed                        int
 	)
 
@@ -170,6 +171,13 @@ func main() {
 					trimInnerLines = append(trimInnerLines, innerLen)
 					if symLines > 0 && innerLen*2 < symLines {
 						trimHadFiner++
+						// Existing in the index is not the same as being a
+						// candidate. A reordering rule can only prefer the
+						// inner symbol if the ranking had it in hand; if it
+						// never surfaced, the fix belongs further upstream.
+						if returnedIDs[inner.id] {
+							trimFinerReturned++
+						}
 					}
 				}
 				if *verbose {
@@ -241,6 +249,8 @@ func main() {
 		summarize("innermost symbol there", trimInnerLines)
 		fmt.Printf("  a finer symbol existed: %d of %d (%.0f%%)  <- granularity, not windowing\n",
 			trimHadFiner, len(trimGaps), 100*float64(trimHadFiner)/float64(len(trimGaps)))
+		fmt.Printf("    of those, also RETURNED: %d  <- only these a reordering rule can reach\n",
+			trimFinerReturned)
 	}
 
 	fmt.Printf("\nEvery share is of all gold regions, so the column adds to 100%%.\n")

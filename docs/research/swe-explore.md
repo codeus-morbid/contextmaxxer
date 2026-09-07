@@ -500,6 +500,56 @@ or reranking on the path. That is composition rather than substitution: grep
 says where a name occurs, the graph says what reaches it, and the measurement
 above says competing with grep on the first question is not worth doing.
 
+## Where a region miss actually happens
+
+HitRegion divided by HitFile is 0.71 for us, 1.00 for CoSIL, 0.80 for Claude
+Code — and 0.82 for BM25. Having found the file, we point at the right code less
+reliably than a lexical baseline. That ratio is the sharpest statement of the
+weakness in these tables, and it is stable per repository (0.57 on openlibrary
+and teleport, 0.72 on django over 209 instances, 0.87 at best on scikit-learn).
+
+Read as "we pick the wrong symbol", it suggests using the call graph to pick a
+better one. [`cmd/regionprobe`](../../cmd/regionprobe) was written to test that
+and reports something else. Over all 848 instances and 3992 gold regions:
+
+| | regions | share |
+|---|---:|---:|
+| hit | 1205 | 30.2% |
+| **file never found** | **2119** | **53.1%** |
+| trimmed: right symbol, wrong part shown | 271 | 6.8% |
+| wrong symbol | 247 | 6.2% |
+| — one call-graph hop from an answer | 86 | 2.2% |
+| — two hops | 55 | 1.4% |
+| — further or unreachable | 106 | 2.7% |
+| lines not in the index | 150 | 3.8% |
+
+(Pooled over regions and without the line budget, so these are not the
+per-instance HitRegion above; the decomposition is the point, not the level.)
+
+**The graph hypothesis is nearly dead**: 3.6 points if two hops were used
+perfectly. **Widening the evidence window is dead**: only 21% of trimmed misses
+sit within ten lines of what was shown, the median is 42 and the p75 is 172.
+
+What the numbers do say is that we return containers. In a trimmed miss the
+returned symbol has a median length of 296 lines while the symbol actually
+holding the gold has a median of 46, and in 64% of them that finer symbol was in
+the index. We rank a class above its own method and then show 8% of the class —
+which also explains why the same symbols are the ones the 2000-byte body cap
+truncates.
+
+The obvious remedy does not work. `internal/retrieve/nesting.go` prefers a
+contained candidate over its container; it is written, tested, and deliberately
+not wired in, because of the 36 misses where a finer symbol existed it was
+itself returned in 4. At a hundred results that share rises from 11% to 41%, so
+the member is in the candidate pool and merely ranks far below the container —
+a promotion rule would have about 1.4 points to work with, paid for in the
+precision that the max_results sweep already priced.
+
+**So within-file work is capped at a few points and the mass is elsewhere.**
+Everything inside the file — graph selection, window width, nesting, the
+unindexed lines — adds to under 11 points against the 53.1% of gold whose file
+we never reach at all.
+
 ## What this benchmark does not measure
 
 SWE-Explore asks one question: given an issue report, name every region a
