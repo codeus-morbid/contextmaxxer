@@ -168,7 +168,7 @@ direction and scaling are the stable signal.)
 ## Research appendix: embedder A/B on public data (CORE-Bench)
 
 To ground the retrieval quality in a benchmark we don't control, we run the
-embedding stage against a subset of **CORE-Bench** (arXiv:2606.11864, HF
+embedding stage against a subset of **CORE-Bench** (arXiv:2606.11864 v3, EMNLP 2026, HF
 `zhangfw123/CORE-Bench`) — Level-2 *issue-to-edit localization*: real GitHub
 issues as queries, repo chunks as the corpus, per-query temporal filters.
 Subset: 7 public repos (3 Python, 2 JS/TS, 2 Go), ~23K chunks, 156 queries.
@@ -266,7 +266,7 @@ Overnight on one consumer GPU; per-repo embedding throughput 42–73 docs/s.
 | vector only | 0.122 | 0.383 |
 | vector + BM25 RRF (production seeding) | **0.150** | **0.438** |
 | *paper, full set:* SweRankEmbed-Large | 0.224 | 0.521 |
-| *paper, full set:* Qwen3-8B (no fine-tune) | 0.203 | — |
+| *paper, full set:* Qwen3-Embedding-8B (no fine-tune) | 0.203 | 0.480 |
 | *paper, full set:* gte-Qwen2-1.5B / bge-m3 | 0.035 / 0.046 | 0.159 / 0.183 |
 
 On the full set hybrid fusion improves BOTH metrics (on the small subset it
@@ -323,8 +323,9 @@ evaluation set (same repos as the baseline table above, ~2,080 queries):
 |---|---|---|---|
 | *paper:* gte-Qwen2-1.5B (general-purpose) | 1.5B | 0.035 | 0.159 |
 | *paper:* bge-m3 (general-purpose) | 568M | 0.046 | 0.183 |
+| *paper:* CodeRankEmbed (code-specific) | <1B | 0.121 | 0.329 |
 | jina-v2-base-code, hybrid (our baseline) | 161M | 0.150 | 0.438 |
-| *paper:* Qwen3-8B, zero-shot | 8B | 0.203 | — |
+| *paper:* Qwen3-Embedding-8B, zero-shot | 8B | 0.203 | 0.480 |
 | *paper:* SweRankEmbed-Large (CC-BY-NC) | 7B | 0.224 | 0.521 |
 | **ft2 (external training data), hybrid** | **161M** | **0.233** | **0.498** |
 | *paper:* Qwen3-8B-SFT (their fine-tune) | 8B | 0.328 | 0.664 |
@@ -332,9 +333,12 @@ evaluation set (same repos as the baseline table above, ~2,080 queries):
 **+55% relative NDCG@10, no shared repositories between training and
 evaluation — and past SweRankEmbed-Large's NDCG@10 with a 161M model** that
 runs locally and ships under a commercial-friendly license. Read the table
-both ways: 6.6× above general-purpose embedders (gte-Qwen2-1.5B) and ahead
-of an 8B zero-shot and the 7B specialized retriever on NDCG@10 — but recall
-stays below SweRankEmbed-Large's, and the paper's own fine-tuned 8B
+both ways: 6.6× above general-purpose embedders (gte-Qwen2-1.5B), 1.9× the
+paper's own sub-1B code-specific model (CodeRankEmbed, 0.121 — the closest
+comparison by size, which the unmodified default already passes at 0.150), and
+ahead of an 8B zero-shot and the 7B specialized retriever on NDCG@10 — but
+recall stays below SweRankEmbed-Large's (it does clear the 8B zero-shot's
+0.480), and the paper's own fine-tuned 8B
 (Qwen3-8B-SFT, 0.328) remains clearly ahead of everything local-sized. A
 locally-run Qwen3-Embedding-0.6B was also tried as a base and rejected
 (worse quality, 12–28× slower to index; see the earlier section). The two

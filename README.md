@@ -245,22 +245,27 @@ comparing models rather than systems.
 Level-2 *issue-to-edit localization* ([arXiv:2606.11864](https://arxiv.org/abs/2606.11864),
 HF `zhangfw123/CORE-Bench`): real GitHub issues as queries, per-query temporal
 filters, 253 repositories, ~2,080 scoreable queries, ~2.2M corpus chunks. Every
-row marked *paper* is the paper's own published number.
+row marked *paper* is the paper's own published number, read from v3 (EMNLP 2026,
+revised 2026-08-24).
 
 | Retriever | Params | NDCG@10 | Recall@100 |
 |---|---:|---:|---:|
 | *paper:* gte-Qwen2-1.5B, general-purpose | 1.5B | 0.035 | 0.159 |
 | *paper:* bge-m3, general-purpose | 568M | 0.046 | 0.183 |
+| *paper:* CodeRankEmbed, code-specific | <1B | 0.121 | 0.329 |
 | **jina-v2-base-code + BM25, RRF** — shipped default | **161M** | **0.150** | **0.438** |
-| *paper:* Qwen3-8B, zero-shot | 8B | 0.203 | — |
+| *paper:* Qwen3-Embedding-8B, zero-shot | 8B | 0.203 | 0.480 |
 | *paper:* SweRankEmbed-Large (CC-BY-NC) | 7B | 0.224 | 0.521 |
 | *research:* ft2 fine-tune + BM25, RRF | 161M | **0.233** | 0.498 |
 | *paper:* Qwen3-8B-SFT, their fine-tune | 8B | 0.328 | 0.664 |
 
-The shipped 161M default sits 3-4× above general-purpose embedders of 3.5× and
-9× its size. A fine-tune of that same 161M encoder passes the 7B specialized
-retriever on NDCG@10 — trained only on SWE-Bench-plus-plus, which shares no
-repository with the evaluation set, so the gain is not contamination.
+The row that matters most is CodeRankEmbed: the paper's own code-specific model
+in the same sub-1B class, which the shipped default passes on both metrics
+(0.150 against 0.121, 0.438 against 0.329). Against the general-purpose
+embedders of 3.5× and 9× its size the margin is 3-4×. A fine-tune of that same
+161M encoder then passes the 7B specialized retriever on NDCG@10 — trained only
+on SWE-Bench-plus-plus, which shares no repository with the evaluation set, so
+the gain is not contamination.
 
 Fusion is where a small encoder earns that place. On the same full set:
 
@@ -280,7 +285,8 @@ same relative gain (+56% and +55%) and the same flat-vector signature.
 Read the limits with it:
 
 - **Recall@100 stays below SweRankEmbed-Large** (0.498 against 0.521) even where
-  NDCG@10 passes it. The fine-tune fixes ordering, not reach.
+  NDCG@10 passes it — though it clears the 8B zero-shot's 0.480. The fine-tune
+  fixes ordering more than it extends reach.
 - **The paper's fine-tuned 8B remains clearly ahead** at 0.328. Nothing
   local-sized is close.
 - **The sets are not identical.** Our evaluation excludes Multi-SWE-bench and
