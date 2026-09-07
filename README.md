@@ -231,19 +231,68 @@ Hit@1 0.72, **Hit@3 0.91**, Recall@5 0.93, Recall@10 0.98. Those cases come from
 private projects and are not published, so treat those numbers as our
 development record rather than as something you can check.
 
-### Research result: small encoder, strong fusion
+### CORE-Bench: the retrieval stage, isolated
 
-A 161M fine-tuned encoder reached NDCG@10 **0.233** on the evaluated CORE-Bench
-Level-2 set, compared with **0.224** reported for the 7B
-SweRankEmbed-Large. Its Recall@100 remained lower, and the paper's fine-tuned
-8B model remained clearly ahead.
+SWE-Explore above scores the whole product. CORE-Bench scores one stage of it,
+and that is exactly what makes it worth running: the dataset ships its own
+corpus — `{_id, text}` chunks with no paths, symbol names or kinds — so the
+extractors, the call graph, PageRank and the intent ranker are not in this path
+at all. What remains is the embedder and the seed fusion, measured against
+numbers we did not produce. A whole-pipeline table like the one above cannot
+exist here, and a benchmark that isolates one stage is the right instrument for
+comparing models rather than systems.
 
-This is a research result, not the default installation path. The shipped
-product configuration uses **jina-embeddings-v2-base-code**; the fine-tuned
-weights will not be described as distributed until weights, provenance and a
-model card are public.
+Level-2 *issue-to-edit localization* ([arXiv:2606.11864](https://arxiv.org/abs/2606.11864),
+HF `zhangfw123/CORE-Bench`): real GitHub issues as queries, per-query temporal
+filters, 253 repositories, ~2,080 scoreable queries, ~2.2M corpus chunks. Every
+row marked *paper* is the paper's own published number.
 
-See [BENCHMARK.md](BENCHMARK.md) for the evaluation boundary and caveats.
+| Retriever | Params | NDCG@10 | Recall@100 |
+|---|---:|---:|---:|
+| *paper:* gte-Qwen2-1.5B, general-purpose | 1.5B | 0.035 | 0.159 |
+| *paper:* bge-m3, general-purpose | 568M | 0.046 | 0.183 |
+| **jina-v2-base-code + BM25, RRF** — shipped default | **161M** | **0.150** | **0.438** |
+| *paper:* Qwen3-8B, zero-shot | 8B | 0.203 | — |
+| *paper:* SweRankEmbed-Large (CC-BY-NC) | 7B | 0.224 | 0.521 |
+| *research:* ft2 fine-tune + BM25, RRF | 161M | **0.233** | 0.498 |
+| *paper:* Qwen3-8B-SFT, their fine-tune | 8B | 0.328 | 0.664 |
+
+The shipped 161M default sits 3-4× above general-purpose embedders of 3.5× and
+9× its size. A fine-tune of that same 161M encoder passes the 7B specialized
+retriever on NDCG@10 — trained only on SWE-Bench-plus-plus, which shares no
+repository with the evaluation set, so the gain is not contamination.
+
+Fusion is where a small encoder earns that place. On the same full set:
+
+| Seed stage | NDCG@10 | Recall@100 |
+|---|---:|---:|
+| vector only | 0.122 | 0.383 |
+| vector + BM25, RRF-fused (k = 60) | **0.150** | **0.438** |
+
+And the fine-tune's mechanism is the same effect again, which is the part worth
+understanding: **vector-only NDCG@10 barely moves** under fine-tuning (0.142 →
+0.141 on a repo-level holdout), while the fused score jumps 0.168 → 0.262. The
+tuned model does not rank better on its own — it surfaces *different* relevant
+chunks than BM25 does, and reciprocal rank fusion compounds two disagreeing
+rankings. Two independent fine-tunes on disjoint training sets reproduced the
+same relative gain (+56% and +55%) and the same flat-vector signature.
+
+Read the limits with it:
+
+- **Recall@100 stays below SweRankEmbed-Large** (0.498 against 0.521) even where
+  NDCG@10 passes it. The fine-tune fixes ordering, not reach.
+- **The paper's fine-tuned 8B remains clearly ahead** at 0.328. Nothing
+  local-sized is close.
+- **The sets are not identical.** Our evaluation excludes Multi-SWE-bench and
+  the plus-plus split used for training; the paper's covers the full original.
+- **This is a research result, not the install path.** The product default is
+  **jina-embeddings-v2-base-code**; the fine-tuned weights are not described as
+  distributed until weights, provenance and a model card are public.
+
+Throughput on a consumer GPU: **49 docs/s** indexing, 51-76 ms per query embed.
+Both the 0.6B upgrade candidate and a graph-blended fusion mode were measured
+and rejected on this benchmark. [BENCHMARK.md](BENCHMARK.md) has the evaluation
+boundary, the per-repository reproduction and every negative result.
 
 ## Supported languages
 
