@@ -59,3 +59,19 @@ jobs:
 
       - name: Build
         run: task build
+
+      - name: Cache ONNX runtime and models
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/contextmaxxer
+            ~/AppData/Local/contextmaxxer
+          key: onnx-${{ runner.os }}-${{ hashFiles('internal/embed/model.go', 'internal/rerank/onnx.go') }}
+
+      - name: MCP handshake
+        shell: bash
+        env:
+          # No GPU on the runners. The CPU runtime still catches an ORT API
+          # mismatch, which is the failure this step exists for.
+          CONTEXTMAXXER_ORT_PROVIDER: cpu
+        run: bash scripts/mcp-handshake.sh
