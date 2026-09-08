@@ -53,6 +53,20 @@ jobs:
       - name: Build
         run: task build
 
+      - name: Cache ONNX runtime and models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/contextmaxxer
+            ~/AppData/Local/contextmaxxer
+          key: onnx-${{ runner.os }}-${{ hashFiles('internal/embed/model.go', 'internal/rerank/onnx.go') }}
+
+      - name: MCP handshake on the binary being shipped
+        shell: bash
+        env:
+          CONTEXTMAXXER_ORT_PROVIDER: cpu
+        run: bash scripts/mcp-handshake.sh
+
       - name: Stage release documentation
         shell: bash
         run: cp LICENSE THIRD_PARTY_NOTICES.md .task/build/

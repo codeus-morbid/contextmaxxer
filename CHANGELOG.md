@@ -3,10 +3,19 @@
 All notable changes to Contextmaxxer are documented here. The project follows
 [Semantic Versioning](https://semver.org/) once public tags are published.
 
-## Unreleased
+## 0.1.0 - 2026-09-08
+
+First public release. Prebuilt binaries for Linux and Windows amd64 are attached
+to this tag; the source-build path in INSTALL.md remains for every other target.
 
 ### Added
 
+- **A release is now gated on the binary actually starting.** CI and the
+  release workflow run the built binary through a real MCP handshake over
+  stdio and assert it answers `initialize` and `tools/list`. The hermetic test
+  suite never loads a real model, so a Go binding that asks for a newer ONNX
+  Runtime API than the pinned native library provides used to compile clean,
+  pass every test, and die at startup.
 - **find_context answers a position.** A query shaped like `path/to/file.go:142`
   — or a whole `rg -n` output line pasted verbatim — is looked up rather than
   searched, returning the symbol enclosing that line with its callers and
@@ -26,6 +35,13 @@ All notable changes to Contextmaxxer are documented here. The project follows
 
 ### Changed
 
+- **SWE-Explore is reported at the served default as well as at the benchmark's
+  list of 20.** The table was labelled "served defaults" and was not: the runner
+  asks for 20 results, the product serves 5, and the B=500 budget never bound
+  (20 results send 89 lines). Both columns are now published — file coverage
+  0.529 against 0.342, precision 0.338 against 0.396 — measured in one sitting
+  with the same binary, the 20-result arm reproducing the published figures to
+  three decimals.
 - Answers reserve their top slots for non-test files when the index holds
   name-conventioned tests. Measured free: precision up, file recall unchanged on
   every one of 124 snapshots. A no-op on an index without such tests.
@@ -36,6 +52,12 @@ All notable changes to Contextmaxxer are documented here. The project follows
 
 ### Fixed
 
+- **`--watch` ignored ten extensions the indexer parses.** Changes to `.mjs`,
+  `.cjs`, `.cs`, `.php`, `.kt`, `.kts`, `.sc`, `.scala`, `.cxx` or `.hh` never
+  triggered a reindex, so the watcher reported itself running while the served
+  index went stale. The watcher kept a second list of source extensions beside
+  the indexer's; it now reads the indexer's table directly and a test asserts
+  the two cannot drift again.
 - **Hooks never ran on Windows.** A hook command is executed through a shell,
   which eats the backslashes in a Windows path, so every hook this installer
   wrote died at "command not found" with a clean exit code — no discovery gate
