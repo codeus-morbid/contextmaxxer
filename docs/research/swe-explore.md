@@ -38,7 +38,9 @@ other four metrics are unambiguous and are not hedged.
 
 ## Results
 
-All 848 instances, B = 500, served defaults:
+All 848 instances, B = 500. The runner asks for a list of 20 — the benchmark
+ranks a list, and the paper's baselines return one too — while the served
+default is 5. Both are reported; see the served-default row below the table.
 
 | | **Contextmaxxer** | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -46,6 +48,20 @@ All 848 instances, B = 500, served defaults:
 | Prec | **0.339** | 0.055 | 0.117 | 0.055 | 0.581 | 0.598 | 1.000 |
 | Rec_l | **0.047** | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
 | HitRegion | **0.375** | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
+
+Served default (`-max 5`, everything else identical), same 848 instances, same
+binary, same sitting:
+
+| | HitFile | Prec | Rec_l | HitRegion | Visible lines |
+|---|---:|---:|---:|---:|---:|
+| list of 20 (table above) | 0.529 | 0.338 | 0.047 | 0.375 | 89 |
+| **served default, 5** | 0.342 | **0.396** | 0.036 | 0.267 | 58 |
+
+A third of the file coverage buys a sixth more precision and a third fewer
+lines. It also moves the first useful result from rank 2.69 to 1.70. The
+list-of-20 arm of this pair reproduced the published table to three decimals
+(Prec 0.338 against the recorded 0.339), so the two rows differ only in how
+many results were requested.
 
 **Both sides are now the same 848 instances**, so the comparison is exactly
 like-for-like and the earlier subset caveat is gone.
@@ -159,6 +175,10 @@ default moved. The genuine tradeoff starts after six.
 | **20 (current)** | 90 | 0.522 | 0.363 | **0.338** | **0.051** |
 | 40 | 113 | 0.578 | 0.387 | 0.261 | 0.046 |
 | 60 | 141 | **0.607** | **0.399** | 0.220 | 0.047 |
+
+This sweep ran on a subset, so its 20-row (0.522) is not the full-set 0.529.
+It only walks upward; the downward point that matters to a user — the served
+default of 5 — is measured on all 848 at the top of this document.
 
 More results reach more files and cost a third of the precision, and line
 recall does not move at all — the extra results arrive compacted, so forty of
