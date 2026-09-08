@@ -10,15 +10,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// watchExts limits reindex triggers to source files we actually parse, so
-// editor swap files, logs and build artifacts don't cause churn. Keyed by the
-// final extension (filepath.Ext).
-var watchExts = map[string]bool{
-	".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true,
-	".py": true, ".rs": true, ".java": true, ".rb": true,
-	".c": true, ".h": true, ".cpp": true, ".cc": true, ".hpp": true,
-}
-
 // Watch monitors root for source-file changes and calls reindex, debounced by
 // `debounce`. reindex is expected to be an incremental pass (hash-skip), so
 // re-running it on any change re-embeds only what actually changed. Calls are
@@ -83,7 +74,7 @@ func Watch(ctx context.Context, root string, reindex func(context.Context) error
 					continue
 				}
 			}
-			if watchExts[filepath.Ext(ev.Name)] {
+			if watchesExt(filepath.Ext(ev.Name)) {
 				arm()
 			}
 
@@ -111,4 +102,16 @@ func Watch(ctx context.Context, root string, reindex func(context.Context) error
 			}
 		}
 	}
+}
+
+// watchesExt reports whether a change to a file with this extension should
+// trigger a reindex. It reads the indexer's own language table rather than a
+// second list: the two were separate and drifted, leaving ten extensions
+// (.mjs, .cjs, .cs, .php, .kt, .kts, .sc, .scala, .cxx, .hh) indexed but
+// unwatched, so editing only such a file left the served index stale. Editor
+// swap files, logs and build artifacts are still ignored, because they are
+// absent from that table too.
+func watchesExt(ext string) bool {
+	_, ok := extToLanguage[ext]
+	return ok
 }
