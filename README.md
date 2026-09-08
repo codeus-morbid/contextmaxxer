@@ -146,8 +146,33 @@ The MCP server exposes:
 - **continue_context** — the next page when a response reports `status:more`;
 - **record_feedback** — optional usefulness labels tied to a retrieval request.
 
-With watch enabled, changed files are re-indexed incrementally. A fast index can
-also backfill embeddings in the background.
+### What it costs to keep running
+
+The first index is the only slow part, and it is paid once.
+
+| | |
+|---|---|
+| First index, 99 files / 995 symbols | 40.4 s |
+| **Re-index after editing one file** | **230 ms** — 1 file re-parsed, 98 skipped as unchanged |
+| Server ready on CockroachDB's 90K symbols | 1.2 s, both ONNX models and a 278 MB vector cache loaded |
+| Warm query, 90K symbols | median 996 ms, fastest 652 ms |
+| Warm query, this repository | median 462 ms, fastest 246 ms |
+
+Files are hashed, so a re-index touches only what actually changed; with
+`--watch` the server does this in the background while you edit and the models
+stay loaded, so the 230 ms above is the whole cost of absorbing a change. The
+vector cache is what keeps startup at a second: a cold SQL load of 90K
+embeddings measured 39.5 s before it existed.
+
+Measured on one consumer GPU (RTX 3060, DirectML) at the served default of five
+results, driven through the real MCP server rather than a library harness. A
+CPU-only machine will be slower; the shape — one slow index, cheap everything
+after — does not change.
+
+Latency is not the lever it looks like. Our own measurement puts it at roughly
+2% of an agent's wall time; what actually costs the agent is how many searches
+it runs and how heavy each answer is. The second is the reason there is no model
+call in the query path at all.
 
 ## Measured results
 
