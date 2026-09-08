@@ -3,7 +3,7 @@
 [![CI](https://github.com/codeus-morbid/contextmaxxer/actions/workflows/ci.yml/badge.svg)](https://github.com/codeus-morbid/contextmaxxer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
-[![Status: beta](https://img.shields.io/badge/status-preparing%20first%20beta-orange.svg)](#project-status)
+[![Release](https://img.shields.io/github/v/release/codeus-morbid/contextmaxxer)](https://github.com/codeus-morbid/contextmaxxer/releases/latest)
 
 > Local code-graph search for coding agents.
 
@@ -395,10 +395,15 @@ with a pinned Rust toolchain. Windows requires a MinGW-compatible gcc.
 
 ## Project status
 
-Contextmaxxer is preparing for its first public beta. The retrieval engine is
-actively dogfooded, and Windows/Linux clean builds plus release archives have
-been validated locally. GitHub-hosted CI remains the final distribution check
-once the public repository exists.
+Contextmaxxer is at **v0.1.0**, its first public release. Linux and Windows
+amd64 archives are built by CI on a tag and published with checksums; the
+release is gated on the packaged binary answering a real MCP handshake, not
+merely compiling. The retrieval engine is actively dogfooded.
+
+The 0.x is meant literally. What the tool returns is measured against an
+external benchmark on all 848 instances, but whether it makes an agent write
+better patches has not been measured, and there is no external usage to learn
+from yet. Both are the next things worth doing rather than caveats to skip.
 
 Detailed references:
 
