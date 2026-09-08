@@ -21,7 +21,9 @@ promise that experimental models or training artifacts ship with releases.
 - [`cmd/embprobe`](../../cmd/embprobe) — runtime-level embedding smoke test
 - [`cmd/ftdata`](../../cmd/ftdata) — training-pair extraction tooling
 
-Fine-tuned weights, full training data and the local training workspace are not
-currently published. Results that depend on them are labeled as recorded
-research and must not be presented as independently reproducible until those
-artifacts, provenance and a model card are released.
+The `ft2` weights and their model card are published as
+[jina-v2-code-ft2](https://huggingface.co/codeusmorbid/jina-v2-code-ft2) under
+CC BY-NC-SA 4.0, the licence of the CORE-Bench training data. The full training
+data and the local training workspace are not published, so results depending
+on them are recorded research: the weights and the recipe can be inspected, the
+training run cannot yet be repeated end to end from this repository alone.

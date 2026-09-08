@@ -329,8 +329,12 @@ Read the limits with it:
 - **The sets are not identical.** Our evaluation excludes Multi-SWE-bench and
   the plus-plus split used for training; the paper's covers the full original.
 - **This is a research result, not the install path.** The product default is
-  **jina-embeddings-v2-base-code**; the fine-tuned weights are not described as
-  distributed until weights, provenance and a model card are public.
+  **jina-embeddings-v2-base-code**, which is Apache-2.0 and commercially clean.
+  The fine-tuned weights are published separately as
+  [jina-v2-code-ft2](https://huggingface.co/codeusmorbid/jina-v2-code-ft2)
+  under CC BY-NC-SA 4.0, inherited from the CORE-Bench training data — research
+  and reproduction only, not for commercial use. They are not installed by
+  default, and on short developer queries they trail the base model.
 
 Throughput on a consumer GPU: **49 docs/s** indexing, 51-76 ms per query embed.
 Both the 0.6B upgrade candidate and a graph-blended fusion mode were measured

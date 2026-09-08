@@ -14,9 +14,10 @@ recipe works on any large Go codebase.
 - **Archived negative results** records approaches that were tested and parked.
 
 Only results whose required artifacts are public should be described as fully
-reproducible. Fine-tuned weights and their training pipeline are not currently
-published, so those rows are recorded research results rather than release
-claims.
+reproducible. The `ft2` weights are published with a model card
+([jina-v2-code-ft2](https://huggingface.co/codeusmorbid/jina-v2-code-ft2),
+CC BY-NC-SA 4.0); the training pipeline and its data are not, so those rows stay
+recorded research results rather than release claims.
 
 ## Setup
 
