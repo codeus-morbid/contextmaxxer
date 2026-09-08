@@ -179,7 +179,15 @@ compare deltas, not absolutes.
 
 **Reproduced 2026-08-03 on current code, exactly.** Per-repo, embed mode:
 dayjs 0.3284/0.8480 (published 0.328/0.848), sqllineage 0.1089/0.4109
-(published 0.109/0.411). Nothing in the retrieval work since has moved the
+(published 0.109/0.411).
+
+**Re-verified 2026-09-08 by recomputation, not from cache.** The GPU work since
+(length-bucketed batching with fixed padding shelves) could in principle have
+moved the vectors, so both repos were re-embedded from an empty cache: dayjs
+0.3284/0.8480 and sqllineage 0.1089/0.4109 again, identical to four decimals.
+The batching change is a throughput change and numerically inert. Reading the
+same figures out of the warm cache would have proved nothing, since those
+vectors predate the change. Nothing in the retrieval work since has moved the
 embedding stage — and it cannot: CORE-Bench supplies its own corpus
 (`{_id, text}` chunks with no paths, symbol names or kinds), so our
 extractors and the symbolic intent ranker are not in this path at all. That
