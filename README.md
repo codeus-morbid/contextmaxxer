@@ -87,26 +87,21 @@ the bottleneck. On small projects a strong model with grep is already cheap.
 
 ## Quick start
 
-**There is no published release yet** — build from source for now. It takes one
-command more than a download, and [Build from source](#build-from-source) has
-the toolchain list. Prebuilt Windows amd64 and Linux amd64 archives are the
-first thing on the [roadmap](ROADMAP.md).
-
-1. Build the binary:
-
-       task bootstrap && task build
-
-   Output lands in `.task/build`.
-2. Put it on PATH.
-3. Pre-download the models and ONNX Runtime:
+1. Download the archive for your platform from the
+   [latest release](https://github.com/codeus-morbid/contextmaxxer/releases/latest)
+   — Windows amd64 and Linux amd64, each with `checksums.txt`. Verify it, unpack
+   it, and put `contextmaxxer` on PATH. [INSTALL.md](INSTALL.md) has the
+   per-platform commands; [Build from source](#build-from-source) has the
+   toolchain list if you would rather build it yourself.
+2. Pre-download the models and ONNX Runtime:
 
        contextmaxxer warmup
 
-4. From the repository you want to search, wire it into your agent:
+3. From the repository you want to search, wire it into your agent:
 
        contextmaxxer init --host claude-code .    # or: cursor, codex
 
-5. Restart the agent and approve the contextmaxxer MCP server.
+4. Restart the agent and approve the contextmaxxer MCP server.
 
 For a large repository, start with the structural index:
 

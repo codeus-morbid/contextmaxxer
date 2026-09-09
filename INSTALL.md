@@ -20,7 +20,7 @@ chmod +x contextmaxxer
 contextmaxxer --version
 ```
 
-If no release exists yet, follow the source-build instructions in
+To build it yourself instead, follow the source-build instructions in
 [README.md](README.md#build-from-source).
 
 ## 2. Warm up the local runtime

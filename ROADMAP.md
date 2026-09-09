@@ -3,10 +3,12 @@
 This roadmap describes direction, not release commitments. Priorities may move
 when public beta evidence contradicts current assumptions.
 
-## First public beta
+## After the first release
 
-- Publish Windows amd64 and Linux amd64 archives with checksums.
-- Run clean GitHub-hosted CI on both platforms.
+v0.1.0 ships Windows amd64 and Linux amd64 archives with checksums, built by CI
+on both platforms and gated on the packaged binary answering a real MCP
+handshake. What that leaves:
+
 - Validate installation with users who did not see the development environment.
 - Collect reproducible retrieval misses and setup failures through issue forms.
 
