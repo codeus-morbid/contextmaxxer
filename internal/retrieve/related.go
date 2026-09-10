@@ -144,7 +144,7 @@ func FindRelatedEdits(ctx context.Context, st Store, changed []string, exclude [
 	// this ranking excluded tests, so the shipped tool has to order them the
 	// same way or its numbers do not transfer.
 	sort.Slice(out, func(i, j int) bool {
-		ti, tj := relatedTestPath(out[i].File), relatedTestPath(out[j].File)
+		ti, tj := walkerTestFile(out[i].File), walkerTestFile(out[j].File)
 		if ti != tj {
 			return tj
 		}
@@ -201,32 +201,4 @@ func extractRelatedNames(changed []string) []string {
 
 func normalizeRelatedPath(p string) string {
 	return path.Clean(strings.ReplaceAll(strings.TrimSpace(p), "\\", "/"))
-}
-
-// relatedTestPath extends the indexer's filename rule with the one dimension it
-// does not look at: the directory.
-//
-// index.IsTestFile is authoritative on naming conventions and is not duplicated
-// here. It does miss two shapes that matter for this ranking, both common in
-// the corpora this was measured on: a file named plainly "tests.py", and any
-// file under a tests/ package. Django uses both — tests/admin_views/tests.py
-// scored above the answer on "password" before this existed. Widening
-// index.IsTestFile itself would change what the indexer stores and what the
-// test floor demotes, moving published benchmark numbers, so the extra
-// condition lives here where only this ranking sees it.
-func relatedTestPath(p string) bool {
-	if walkerTestFile(p) {
-		return true
-	}
-	clean := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
-	base := clean
-	if i := strings.LastIndex(clean, "/"); i >= 0 {
-		base = clean[i+1:]
-		for _, seg := range strings.Split(clean[:i], "/") {
-			if seg == "test" || seg == "tests" || seg == "testing" {
-				return true
-			}
-		}
-	}
-	return base == "tests.py" || base == "test.py"
 }

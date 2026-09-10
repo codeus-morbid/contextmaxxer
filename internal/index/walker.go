@@ -93,8 +93,31 @@ func SkipDir(name string) bool {
 	return skipDirs[name] || strings.HasPrefix(name, ".")
 }
 
-// DECISION: test file patterns are filtered at the file level, not directory level,
-// because some projects keep legitimate non-test code in directories named "test/".
+// DECISION(2026-09, reaffirmed with numbers): test files are filtered by
+// filename, never by directory, and the index deliberately keeps whole test
+// suites.
+//
+// The original reason was that some projects keep real code in a directory
+// called "test/" — django/test/ is the framework users import as django.test.
+// That is true but small: 8 files. The rule looked expensive, because a suite
+// laid out by directory names its files models.py, urls.py and tests.py, which
+// no basename rule can see: across 63 indexed projects that is 8,061 of 73,132
+// files (11%), and 85% of the pylint index, 74% of lombok, 57% of django.
+//
+// Excluding those directories was implemented and then reverted, because the
+// benchmark says the cost runs the other way: 308 of SWE-Explore's 3,659 gold
+// files (8.4%) sit under a test directory without a test-shaped name, spread
+// over 224 of the 848 instances. Gold there is what a solver had to READ, and
+// reading tests/expressions/tests.py to learn the expected behaviour is part
+// of the work. Dropping those directories would make a quarter of the
+// benchmark's ground truth unreachable to buy a smaller index.
+//
+// Crowding is a ranking problem and is solved in ranking: the test floor keeps
+// tests out of the top slots while leaving them findable. See walkerTestFile
+// in internal/retrieve/testfloor.go, which is where the directory rule lives.
+// REVISIT IF: an index-size or precision measurement shows the noise costs
+// more than 8.4% of reachable ground truth.
+//
 // Patterns cover Go (_test.go), TS/JS (.test.*, .spec.*) and Python (test_*.py, *_test.py).
 // IsTestFile reports whether a filename follows a test naming convention.
 // Exported so ranking can ask the same question the walker asks: two copies of
@@ -266,4 +289,28 @@ func hashFile(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// IsTestSuiteDir reports whether a directory holds a test suite, given its path
+// relative to the repository root.
+//
+// Only plural "tests" is matched at depth. A singular nested "test" is left
+// alone on purpose: django/test/ is Django's shipped testing framework, not its
+// tests, and skipping it would drop code users import. At the root the singular
+// form is unambiguous — NodeBB keeps its whole suite in test/.
+func IsTestSuiteDir(relPath string) bool {
+	clean := strings.Trim(strings.ReplaceAll(relPath, "\\", "/"), "/")
+	if clean == "" || clean == "." {
+		return false
+	}
+	parts := strings.Split(strings.ToLower(clean), "/")
+	if parts[0] == "test" || parts[0] == "tests" {
+		return true
+	}
+	for _, p := range parts {
+		if p == "tests" {
+			return true
+		}
+	}
+	return false
 }

@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/store"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -149,4 +151,57 @@ func TestWalker_RespectsContext(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("channel did not close after context cancel")
 	}
+}
+
+// The gap this closes: a suite laid out by directory names its files models.py,
+// urls.py and tests.py, so no basename rule can see them. Across 63 indexed
+// projects that let 11% of all indexed files through as source — 85% of the
+// pylint index, 57% of django's.
+func TestIsTestSuiteDir(t *testing.T) {
+	for _, p := range []string{
+		"tests", "tests/admin_views", "test", "test/api",
+		"src/pkg/tests", "a/b/tests/c",
+	} {
+		assert.True(t, IsTestSuiteDir(p), "%s holds a suite", p)
+	}
+
+	// The case the original file-level-only decision existed to protect:
+	// django/test/ is the framework users import as django.test, not tests.
+	// Singular and nested stays.
+	for _, p := range []string{
+		"", ".", "django/test", "django/test/client", "src/testing", "pkg/latest",
+		"contrib/testdata", "internal/attest",
+	} {
+		assert.False(t, IsTestSuiteDir(p), "%s is not a suite", p)
+	}
+}
+
+// Suites are indexed on purpose, and this pins the reason. Excluding
+// directories was implemented and reverted: 308 of SWE-Explore's 3,659 gold
+// files sit under one without a test-shaped name, across 224 of 848 instances,
+// and gold there is what a solver had to read. Crowding is handled by the test
+// floor in ranking, where demoting costs nothing that dropping would.
+func TestWalkerKeepsSuiteDirectoriesForReading(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(body), 0o644))
+	}
+	write("django/db/base.py", "def f(): pass")
+	write("django/test/client.py", "class Client: pass")
+	write("tests/admin/tests.py", "def test_x(): pass")
+	write("tests/admin/test_forms.py", "def test_y(): pass") // test-shaped name: still dropped
+
+	w := NewWalkerWithConfig(slog.New(slog.NewTextHandler(io.Discard, nil)), WalkerConfig{})
+	records, errs := w.Walk(context.Background(), root)
+	var got []string
+	for r := range records {
+		got = append(got, filepath.ToSlash(r.RelPath))
+	}
+	require.NoError(t, <-errs)
+
+	assert.ElementsMatch(t, []string{
+		"django/db/base.py", "django/test/client.py", "tests/admin/tests.py",
+	}, got, "the filename rule still drops test_forms.py; the directory is kept")
 }

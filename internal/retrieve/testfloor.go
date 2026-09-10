@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/codeus-morbid/contextmaxxer/internal/index"
 )
@@ -57,11 +58,27 @@ func defaultTestFloor(maxResults int) int {
 // retrieval package's isTestFile is narrower (Go and TypeScript), and this
 // sample is mostly Python, so using it here would have made the knob a no-op
 // on the very instances the experiment is about.
+// A suite laid out by directory names its files models.py, urls.py and
+// tests.py, so the filename rule cannot see them: across 63 indexed projects
+// that is 11% of all indexed files, and 57% of django's. They stay in the index
+// on purpose — 8.4% of SWE-Explore's gold files live there and are what a
+// solver had to read — so the only place to stop them crowding an answer is
+// here, where demoting costs nothing that dropping would.
 func walkerTestFile(path string) bool {
 	if path == "" {
 		return false
 	}
-	return index.IsTestFile(filepath.Base(filepath.ToSlash(path)))
+	clean := filepath.ToSlash(path)
+	if index.IsTestFile(filepath.Base(clean)) {
+		return true
+	}
+	if dir := filepath.ToSlash(filepath.Dir(clean)); dir != "." && dir != "/" {
+		if index.IsTestSuiteDir(dir) {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(clean))
+	return base == "tests.py" || base == "test.py"
 }
 
 // applyTestFloor reserves the first `floor` answer slots for non-test files.
