@@ -552,6 +552,38 @@ func (s *Server) Serve(ctx context.Context) error {
 		return mcp.NewToolResultText(renderExpansionPage(page)), nil
 	})
 
+	relatedTool := mcp.NewTool("find_related_edits",
+		mcp.WithDescription(`Call this AFTER making an edit, before reporting the work done: it reports where else the names you just changed already live, which is how a change that belongs in several places is caught. Paste the diff you produced, or name the identifiers you renamed or introduced. Ranking is by rarity, so a name carried by most of the repository is ignored and a name carried by two symbols decides the answer. This runs no embedding and no semantic search.`),
+		mcp.WithString("changed",
+			mcp.Required(),
+			mcp.Description("The diff you just made, pasted verbatim, or the identifiers the edit touched. From a diff only added and removed lines are read: context lines describe code that stayed the same."),
+		),
+		mcp.WithString("exclude",
+			mcp.Description("Comma-separated paths you have already edited, so they are not offered back to you."),
+		),
+		mcp.WithNumber("max_results",
+			mcp.Description("How many related files to return (default 5)"),
+		),
+	)
+	srv.AddTool(relatedTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		changed, err := req.RequireString("changed")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		var exclude []string
+		for _, p := range strings.Split(req.GetString("exclude", ""), ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				exclude = append(exclude, p)
+			}
+		}
+		limit := req.GetInt("max_results", 5)
+		related, err := s.retriever.FindRelatedEdits(ctx, []string{changed}, exclude, limit)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(renderRelated(related)), nil
+	})
+
 	continueTool := mcp.NewTool("continue_context",
 		mcp.WithDescription(`Return the next lossless page from expand_context. Call this whenever an expansion returns status:more, using next_cursor verbatim, until status:complete. It performs no search and skipping it leaves the symbol body incomplete.`),
 		mcp.WithString("cursor",
@@ -1017,4 +1049,29 @@ func visibleLineCount(sr retrieve.ScoredResult) int {
 		return sr.BodyEndLine - sr.BodyStartLine + 1
 	}
 	return 0
+}
+
+// renderRelated writes the related-edit answer. It names the evidence — which
+// rare identifier put each file on the list — because the caller has to judge
+// whether the relationship is real, and a bare list of paths gives it nothing
+// to judge with. An empty result says so plainly rather than returning nothing:
+// silence reads as "the tool failed", while "no other place carries these
+// names" is a finding the agent can act on.
+func renderRelated(related []retrieve.RelatedFile) string {
+	if len(related) == 0 {
+		return "no other indexed file carries the names you changed: this edit looks self-contained.\n"
+	}
+	var b strings.Builder
+	b.WriteString("other places carrying the names you changed, rarest name first:\n")
+	for i, r := range related {
+		fmt.Fprintf(&b, "\n%d. %s\n", i+1, strings.ReplaceAll(r.File, "\\", "/"))
+		if len(r.Shared) > 0 {
+			fmt.Fprintf(&b, "   shares: %s\n", strings.Join(r.Shared, ", "))
+		}
+		if len(r.Symbols) > 0 {
+			fmt.Fprintf(&b, "   in: %s\n", strings.Join(r.Symbols, ", "))
+		}
+	}
+	b.WriteString("\nthese are candidates, not instructions: open one before changing it.\n")
+	return b.String()
 }

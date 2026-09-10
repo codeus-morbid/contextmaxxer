@@ -364,3 +364,9 @@ func (r *Retriever) Retrieve(ctx context.Context, req Request) (Result, error) {
 func (r *Retriever) GetSymbolBody(ctx context.Context, symbolID int64) (store.SymbolBody, error) {
 	return r.store.GetSymbolBody(ctx, symbolID)
 }
+
+// FindRelatedEdits reports where else the names an edit touched already live.
+// It runs no embedding and no ranking pipeline: only rare-name lookups.
+func (r *Retriever) FindRelatedEdits(ctx context.Context, changed, exclude []string, limit int) ([]RelatedFile, error) {
+	return FindRelatedEdits(ctx, r.store, changed, exclude, limit)
+}
