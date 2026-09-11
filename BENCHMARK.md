@@ -344,7 +344,9 @@ evaluation — and past SweRankEmbed-Large's NDCG@10 with a 161M model** that
 runs locally and ships under a commercial-friendly license. Read the table
 both ways: 6.6× above general-purpose embedders (gte-Qwen2-1.5B), 1.9× the
 paper's own sub-1B code-specific model (CodeRankEmbed, 0.121 — the closest
-comparison by size, which the unmodified default already passes at 0.150), and
+comparison by size; note that every paper row is a retriever alone while ours
+is fused with BM25, and stripped to the encoder the unmodified default ties it
+at 0.122 rather than passing it at 0.150), and
 ahead of an 8B zero-shot and the 7B specialized retriever on NDCG@10 — but
 recall stays below SweRankEmbed-Large's (it does clear the 8B zero-shot's
 0.480), and the paper's own fine-tuned 8B

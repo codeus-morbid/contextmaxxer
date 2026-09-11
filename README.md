@@ -291,13 +291,19 @@ revised 2026-08-24).
 | *research:* ft2 fine-tune + BM25, RRF | 161M | **0.233** | 0.498 |
 | *paper:* Qwen3-8B-SFT, their fine-tune | 8B | 0.328 | 0.664 |
 
-The row that matters most is CodeRankEmbed: the paper's own code-specific model
-in the same sub-1B class, which the shipped default passes on both metrics
-(0.150 against 0.121, 0.438 against 0.329). Against the general-purpose
-embedders of 3.5× and 9× its size the margin is 3-4×. A fine-tune of that same
-161M encoder then passes the 7B specialized retriever on NDCG@10 — trained only
-on SWE-Bench-plus-plus, which shares no repository with the evaluation set, so
-the gain is not contamination.
+**Read that table as system against model, not model against model.** Every
+*paper* row is a retriever scoring alone; our row is that retriever fused with
+BM25, which is what the product ships and therefore what a user gets — but it
+is not a like-for-like encoder comparison. Stripped to the encoder, against
+CodeRankEmbed — the paper's own code-specific model in the same sub-1B class —
+the shipped default ties on NDCG@10 (0.122 against 0.121) and leads on
+Recall@100 (0.383 against 0.329). The 0.150 is the fusion's, not the encoder's.
+
+Against the general-purpose embedders of 3.5× and 9× its size the margin is
+3-4× and survives either reading. A fine-tune of that same 161M encoder then
+passes the 7B specialized retriever on NDCG@10 — trained only on
+SWE-Bench-plus-plus, which shares no repository with the evaluation set, so the
+gain is not contamination.
 
 Fusion is where a small encoder earns that place. On the same full set:
 
