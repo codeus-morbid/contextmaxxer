@@ -20,7 +20,7 @@ tasks:
     desc: Build the pinned tokenizer library required by CGo
     cmds:
       - cmd: bash scripts/build-tokenizers.sh
-        platforms: [linux]
+        platforms: [linux, darwin]
       - cmd: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-tokenizers.ps1
         platforms: [windows]
 
@@ -29,7 +29,7 @@ tasks:
     deps: [bootstrap]
     cmds:
       - cmd: mkdir -p {{.BUILD_DIR}} && go build -ldflags "{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.BINARY}} ./cmd/contextmaxxer
-        platforms: [linux]
+        platforms: [linux, darwin]
       - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '{{.BUILD_DIR}}' | Out-Null; go build -ldflags '{{.LDFLAGS}}' -o '{{.BUILD_DIR}}/{{.BINARY}}.exe' ./cmd/contextmaxxer"
         platforms: [windows]
 

@@ -19,6 +19,12 @@ jobs:
             os: ubuntu-24.04
           - name: Windows amd64
             os: windows-2025
+          # Nobody on this project owns a Mac, so CI is the only place the
+          # darwin build is exercised at all. Keeping it here rather than only
+          # in the release workflow means a break shows up on a pull request
+          # instead of on a tag, when the fix costs a retag.
+          - name: macOS arm64
+            os: macos-14
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -70,6 +76,7 @@ jobs:
           path: |
             ~/.cache/contextmaxxer
             ~/AppData/Local/contextmaxxer
+            ~/Library/Caches/contextmaxxer
           key: onnx-${{ runner.os }}-${{ hashFiles('internal/embed/model.go', 'internal/rerank/onnx.go') }}
 
       - name: MCP handshake

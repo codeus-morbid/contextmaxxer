@@ -21,6 +21,12 @@ jobs:
           - name: Windows amd64
             os: windows-2025
             artifact: contextmaxxer_windows_amd64
+          # Apple Silicon only. ONNX Runtime publishes exactly one darwin asset
+          # and it is osx-arm64, so an Intel build would 404 on first run —
+          # see the DECISION in internal/embed/model.go.
+          - name: macOS arm64
+            os: macos-14
+            artifact: contextmaxxer_darwin_arm64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -59,6 +65,7 @@ jobs:
           path: |
             ~/.cache/contextmaxxer
             ~/AppData/Local/contextmaxxer
+            ~/Library/Caches/contextmaxxer
           key: onnx-${{ runner.os }}-${{ hashFiles('internal/embed/model.go', 'internal/rerank/onnx.go') }}
 
       - name: MCP handshake on the binary being shipped
@@ -71,10 +78,15 @@ jobs:
         shell: bash
         run: cp LICENSE THIRD_PARTY_NOTICES.md .task/build/
 
-      - name: Package Linux archive
-        if: runner.os == 'Linux'
+      - name: Package tar archive
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         shell: bash
-        run: tar -C .task/build -czf "contextmaxxer_${GITHUB_REF_NAME}_linux_amd64.tar.gz" contextmaxxer LICENSE THIRD_PARTY_NOTICES.md
+        run: |
+          case "${RUNNER_OS}" in
+            Linux) target=linux_amd64 ;;
+            macOS) target=darwin_arm64 ;;
+          esac
+          tar -C .task/build -czf "contextmaxxer_${GITHUB_REF_NAME}_${target}.tar.gz" contextmaxxer LICENSE THIRD_PARTY_NOTICES.md
 
       - name: Package Windows archive
         if: runner.os == 'Windows'
