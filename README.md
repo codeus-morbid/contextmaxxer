@@ -11,19 +11,21 @@ Contextmaxxer gives Claude Code, Cursor and Codex an MCP tool for finding the
 small set of symbols that answers a question — with source lines, callers,
 callees and exact call sites already attached.
 
-On CockroachDB's 90K symbols an agent driving it answered 6/6 architecture
-questions with **zero source-file reads** — every answer cited from what the
-tool returned, nothing opened by hand. That is the part that reproduces in
-every run we have.
+Scored on **all 848 instances** of
+[SWE-Explore](https://arxiv.org/html/2606.07297v1) — an external benchmark
+whose baselines are the paper's own, not ours — it reaches **2.4× the file
+coverage of the best classical retriever** at the default five results, and
+3.8× at the list length the benchmark ranks. In paired agent runs on
+CockroachDB's 90K symbols it answered every architecture question with **zero
+source-file reads**: the agent cited from what the tool returned and opened
+nothing by hand, which is the result that reproduces in every run.
 
-The speed ratios this section used to lead with are gone on purpose. They came
-from single paired runs whose repeats vary by up to 57%, and latency turned out
-to be roughly 2% of an agent's wall time anyway — a coefficient on the wrong
-axis. What an agent actually spends is searches and answer weight.
-[BENCHMARK.md](BENCHMARK.md) keeps the runs, the spread and the negative
-results, including the one that matters most: whether this makes an agent write
-better patches is **not** measured, and an early read on 25 SWE-bench instances
-did not move it.
+Read the limits with it. Agentic localizers that put a model inside the search
+loop still score higher on file coverage; here the graph is built once at
+indexing time and a query makes no model call at all. And whether any of this
+makes an agent write **better patches** is not measured — an early read on 25
+SWE-bench instances did not move it. [BENCHMARK.md](BENCHMARK.md) has the
+protocol, the run-to-run spread and every negative result.
 
 Everything needed for indexing and search runs locally. Your repository is not
 uploaded to a search service.
