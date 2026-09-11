@@ -19,6 +19,7 @@ internal/eval/out/
 
 # local artifacts
 .env
+/CLAUDE.md
 /.mcp.json
 .claude/worktrees/
 .claude/settings.json
