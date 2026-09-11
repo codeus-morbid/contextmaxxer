@@ -3,6 +3,47 @@
 All notable changes to Contextmaxxer are documented here. The project follows
 [Semantic Versioning](https://semver.org/) once public tags are published.
 
+## 0.1.1 - 2026-09-12
+
+### Added
+
+- **macOS arm64 archives.** The ONNX Runtime spec and the cgo directives were
+  already in place; the tokenizer bootstrap was pinned to Linux in three places
+  and now derives them from the host. Intel macOS exits with the reason rather
+  than a download error later: upstream publishes exactly one darwin asset and
+  it is arm64. macos-14 runs in CI as well as in release, so a break surfaces
+  on a pull request rather than on a tag.
+- **find_related_edits.** Given the diff just made, it reports where else the
+  changed names already live, ranked by rarity. An agent handed the gold file
+  paths resolves 84% of the measured SWE-bench Verified instances against 68%
+  for one that searches for itself, and the file it misses has usually already
+  been returned to it.
+
+### Changed
+
+- The tuning parameters are off find_context's published schema and behind
+  `CONTEXTMAXXER_EXPERIMENTAL_TOOLS`. They were 42% of the schema every session
+  carries, describing knobs the tool tells an agent to omit; passing one still
+  works.
+- The opening claim drops its speed ratios. They came from single paired runs
+  whose repeats vary by up to 57%, and latency is roughly 2% of an agent's wall
+  time. Zero source-file reads, which reproduces in every run, stays.
+- The CORE-Bench table now says that our row is a retriever fused with BM25
+  while every paper row is a retriever alone. Stripped to the encoder, the
+  shipped default ties CodeRankEmbed at 0.122 rather than passing it at 0.150.
+- SWE-Explore is reported at the served default of five results as well as at
+  the benchmark's list of twenty: 0.342 file coverage against 0.529.
+
+### Fixed
+
+- The test floor could not see a suite laid out by directory. Files named
+  models.py or tests.py inside tests/ are 11% of indexed files across 63
+  projects and 57% of django's, and they competed for the slots the floor
+  exists to protect. Excluding them from the index was implemented and
+  reverted: 8.4% of SWE-Explore's gold files live there.
+- Both bootstrap scripts reinstalled the pinned Rust toolchain on every build,
+  testing rustup's output against a pattern that could not match it.
+
 ## 0.1.0 - 2026-09-08
 
 First public release. Prebuilt binaries for Linux and Windows amd64 are attached
