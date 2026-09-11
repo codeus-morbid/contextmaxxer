@@ -140,7 +140,7 @@ func NewServerWithOptions(r *retrieve.Retriever, rec *feedback.Recorder, opts Op
 func (s *Server) Serve(ctx context.Context) error {
 	srv := mcpserver.NewMCPServer("contextmaxxer", "0.1.0")
 
-	tool := mcp.NewTool("find_context",
+	toolOpts := []mcp.ToolOption{
 		mcp.WithDescription(findContextToolDescription),
 		mcp.WithString("query",
 			mcp.Required(),
@@ -155,31 +155,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		mcp.WithNumber("max_results",
 			mcp.Description("Max number of symbols (default 5; recall saturates early, so raising this mostly adds tokens — rephrase instead if the answer is missing)"),
 		),
-		mcp.WithNumber("rerank_k",
-			mcp.Description("Candidate count to rerank before returning max_results"),
-		),
-		mcp.WithNumber("seed_k",
-			mcp.Description("Seed candidates pulled from vector+FTS before graph expansion (0 = default)"),
-		),
-		mcp.WithBoolean("skip_intent",
-			mcp.Description("Disable the symbolic intent ranker (experiment knob)"),
-		),
-		mcp.WithBoolean("preserve_full_bodies",
-			mcp.Description("Skip query-relevant evidence trimming and return whole indexed excerpts (experiment knob)"),
-		),
-		mcp.WithNumber("test_floor",
-			mcp.Description("Reserve this many top answer slots for non-test files; tests keep their order behind them and fill what is left (experiment knob)"),
-		),
-		mcp.WithNumber("literal_slots",
-			mcp.Description("Hand this many of the last answer slots to files where several of the query's identifiers occur together (experiment knob; needs an index built with --include-tests to have anything new to offer)"),
-		),
-		mcp.WithBoolean("adaptive_rerank",
-			mcp.Description("Skip cross-encoder rerank for confident exact/constructor top matches"),
-		),
 		mcp.WithString("format",
 			mcp.Description("Response encoding: 'md' (default — markdown cards, cheapest to read) or 'json'"),
 		),
-	)
+	}
+	toolOpts = append(toolOpts, experimentalFindContextOptions()...)
+	tool := mcp.NewTool("find_context", toolOpts...)
 
 	srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query, err := req.RequireString("query")
@@ -1074,4 +1055,48 @@ func renderRelated(related []retrieve.RelatedFile) string {
 	}
 	b.WriteString("\nthese are candidates, not instructions: open one before changing it.\n")
 	return b.String()
+}
+
+// experimentalFindContextTuning is the environment switch that puts the tuning
+// parameters back on the schema. The ablation harnesses in cmd/ set it; nothing
+// a user runs does.
+const experimentalFindContextTuning = "CONTEXTMAXXER_EXPERIMENTAL_TOOLS"
+
+// experimentalFindContextOptions returns the tuning parameters, or nothing.
+//
+// They are off the published schema because a schema is paid for whether or not
+// it is used: these seven were 1,071 characters of the tool's 2,563 — 42% of
+// what every session carries — to describe knobs the tool's own description
+// tells an agent to leave alone. Handing a model seven ways to reconfigure a
+// pipeline it cannot evaluate is a cost with no matching benefit.
+//
+// They still work when passed: the handler reads them regardless, so a harness
+// that sets them keeps working whether or not the schema advertises them.
+func experimentalFindContextOptions() []mcp.ToolOption {
+	if os.Getenv(experimentalFindContextTuning) == "" {
+		return nil
+	}
+	return []mcp.ToolOption{
+		mcp.WithNumber("rerank_k",
+			mcp.Description("Candidate count to rerank before returning max_results"),
+		),
+		mcp.WithNumber("seed_k",
+			mcp.Description("Seed candidates pulled from vector+FTS before graph expansion (0 = default)"),
+		),
+		mcp.WithBoolean("skip_intent",
+			mcp.Description("Disable the symbolic intent ranker (experiment knob)"),
+		),
+		mcp.WithBoolean("preserve_full_bodies",
+			mcp.Description("Skip query-relevant evidence trimming and return whole indexed excerpts (experiment knob)"),
+		),
+		mcp.WithNumber("test_floor",
+			mcp.Description("Reserve this many top answer slots for non-test files; tests keep their order behind them and fill what is left (experiment knob)"),
+		),
+		mcp.WithNumber("literal_slots",
+			mcp.Description("Hand this many of the last answer slots to files where several of the query's identifiers occur together (experiment knob; needs an index built with --include-tests to have anything new to offer)"),
+		),
+		mcp.WithBoolean("adaptive_rerank",
+			mcp.Description("Skip cross-encoder rerank for confident exact/constructor top matches"),
+		),
+	}
 }

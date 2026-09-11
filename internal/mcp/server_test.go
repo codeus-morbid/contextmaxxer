@@ -213,3 +213,16 @@ func TestVisibleSpanTextNamesEveryWindow(t *testing.T) {
 		BodySegments: []retrieve.BodySegment{{StartLine: 10, Lines: 2}, {StartLine: 40, Lines: 3}},
 	}))
 }
+
+// The tuning parameters are 42% of find_context's schema — 1,071 characters of
+// 2,563 — and the tool's own description tells an agent not to use them. They
+// are paid for on every session whether or not they are called, so they are off
+// the schema unless a harness asks for them.
+func TestExperimentalOptionsAreOffByDefault(t *testing.T) {
+	t.Setenv(experimentalFindContextTuning, "")
+	assert.Empty(t, experimentalFindContextOptions())
+
+	t.Setenv(experimentalFindContextTuning, "1")
+	assert.Len(t, experimentalFindContextOptions(), 7,
+		"the ablation harnesses in cmd/ still need every knob")
+}
