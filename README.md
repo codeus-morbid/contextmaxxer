@@ -11,12 +11,19 @@ Contextmaxxer gives Claude Code, Cursor and Codex an MCP tool for finding the
 small set of symbols that answers a question — with source lines, callers,
 callees and exact call sites already attached.
 
-On CockroachDB's 90K symbols it answered 6/6 architecture questions with
-**4.9× fewer discovery calls, zero source-file reads and 2.1× lower latency**
-than grep-driven exploration. That is one paired run: repeats of this
-measurement vary by up to 57%, so read it as an order of magnitude and not a
-coefficient — [BENCHMARK.md](BENCHMARK.md) says exactly how much a single run is
-worth. Zero source reads is the part that reproduces every time.
+On CockroachDB's 90K symbols an agent driving it answered 6/6 architecture
+questions with **zero source-file reads** — every answer cited from what the
+tool returned, nothing opened by hand. That is the part that reproduces in
+every run we have.
+
+The speed ratios this section used to lead with are gone on purpose. They came
+from single paired runs whose repeats vary by up to 57%, and latency turned out
+to be roughly 2% of an agent's wall time anyway — a coefficient on the wrong
+axis. What an agent actually spends is searches and answer weight.
+[BENCHMARK.md](BENCHMARK.md) keeps the runs, the spread and the negative
+results, including the one that matters most: whether this makes an agent write
+better patches is **not** measured, and an early read on 25 SWE-bench instances
+did not move it.
 
 Everything needed for indexing and search runs locally. Your repository is not
 uploaded to a search service.
