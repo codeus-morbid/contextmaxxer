@@ -79,7 +79,10 @@ if (-not $gcc) {
 
 $installedToolchains = rustup toolchain list
 if ($LASTEXITCODE -ne 0) { throw "rustup toolchain list failed" }
-if (-not ($installedToolchains | Where-Object { $_ -match "^$([regex]::Escape($RustToolchain))-" })) {
+# rustup prints "<toolchain> (active, default)", so the name is the first field
+# and never has a trailing dash. Matching one reinstalled the toolchain on every
+# build.
+if (-not ($installedToolchains | Where-Object { ($_ -split '\s+')[0] -eq $RustToolchain })) {
     Write-Host "Installing Rust $RustToolchain (one-time)..." -ForegroundColor Cyan
     rustup toolchain install $RustToolchain --profile minimal
     if ($LASTEXITCODE -ne 0) { throw "rustup toolchain install failed" }

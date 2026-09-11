@@ -70,7 +70,10 @@ git -C "${work_dir}" fetch --depth 1 origin "${tokenizers_commit}"
 git -C "${work_dir}" checkout --quiet --detach FETCH_HEAD
 
 echo "Building daulet/tokenizers ${tokenizers_commit} for ${rust_target}..."
-if ! rustup toolchain list | grep -q "^${rust_toolchain}-"; then
+# rustup prints "<toolchain> (active, default)", so the name is the first field
+# and never has a trailing dash. Matching one reinstalled the toolchain on every
+# build.
+if ! rustup toolchain list | awk '{print $1}' | grep -qxF "${rust_toolchain}"; then
   rustup toolchain install "${rust_toolchain}" --profile minimal
 fi
 if ! rustup target list --installed --toolchain "${rust_toolchain}" | grep -qx "${rust_target}"; then
