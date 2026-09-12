@@ -98,6 +98,7 @@ func main() {
 		sumKept, sumShown, sumUnique           int
 		sumGoldViaRefs                         float64
 		completeOneCall                        int
+		returnedLens                           []int
 	)
 
 	for _, inst := range instances {
@@ -167,6 +168,17 @@ func main() {
 
 		m := scoreWithBudget(inst, res, *budget)
 		scored++
+
+		// How long the symbols we return actually are. The index is made of
+		// small units — median 10 lines across 40 snapshots, 90% under 49 — so
+		// a much larger median here means ranking prefers containers over the
+		// precise symbol, which costs budget and hides gold inside a trimmed
+		// body.
+		for i := 0; i < m.kept && i < len(res.Lines); i++ {
+			if start, end, ok := parseSpan(res.Lines[i]); ok && end >= start {
+				returnedLens = append(returnedLens, end-start+1)
+			}
+		}
 		sumHitFile += m.hitFile
 		sumFileRecall += m.fileRecall
 		sumNDCG += m.ndcg
@@ -248,6 +260,12 @@ func main() {
 		sumHitRegion/f, sumEfficiency/f, sumLineRecall/f, sumF1/f, sumFileRecall/f, *budget, sumNDCGB/f)
 	fmt.Printf("kept %.1f of %d results per instance, %.0f visible lines on average\n",
 		float64(sumKept)/f, *maxResults, float64(sumShown)/f)
+	if len(returnedLens) > 0 {
+		sort.Ints(returnedLens)
+		at := func(p float64) int { return returnedLens[min(len(returnedLens)-1, int(float64(len(returnedLens))*p))] }
+		fmt.Printf("returned symbol length: median %d, p75 %d, p90 %d lines (n=%d)\n",
+			at(0.50), at(0.75), at(0.90), len(returnedLens))
+	}
 	fmt.Printf("distinct files %.1f of %.1f results — the rest are further symbols from a file already in the list\n",
 		float64(sumUnique)/f, float64(sumKept)/f)
 
