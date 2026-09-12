@@ -38,9 +38,11 @@ other four metrics are unambiguous and are not hedged.
 
 ## Results
 
-All 848 instances, B = 500. The runner asks for a list of 20 — the benchmark
-ranks a list, and the paper's baselines return one too — while the served
-default is 5. Both are reported; see the served-default row below the table.
+All 848 instances, B = 500. The runner asks for a list of 20; the served
+default is 5. The paper fixes K = 5 for every explorer it compares ("each
+explorer is asked to return its five most relevant regions"), so the
+served-default row below the table is the one to read against these baselines,
+and the table itself shows what a longer list reaches. Both are reported.
 
 | | **Contextmaxxer** | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
 |---|---:|---:|---:|---:|---:|---:|---:|
