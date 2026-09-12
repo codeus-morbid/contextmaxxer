@@ -206,6 +206,11 @@ func (s *Server) Serve(ctx context.Context) error {
 		// Experiment hook: turn the intent ranker off to measure what it
 		// actually contributes on repos we did not write.
 		skipIntent := req.GetBool("skip_intent", false)
+		// Experiment hook: take the cross-encoder out of RANKING only. Turning
+		// the reranker off entirely also takes it out of evidence-window
+		// selection, so a run without it measures two stages at once and
+		// cannot say which one moved.
+		skipRerank := req.GetBool("skip_rerank", false)
 		// Experiment hook: evidence trimming costs 0.8-2.8s on cockroach (33-55%
 		// of the query) because it embeds every 10-line window of every result.
 		// expand_context now covers the case it was invented for, so its value
@@ -250,6 +255,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			Alpha:              float32(alpha),
 			AlphaSet:           alphaSet,
 			SkipIntent:         skipIntent,
+			SkipRerank:         skipRerank,
 			PreserveFullBodies: preserveFullBodies,
 			AdaptiveRerank:     adaptiveRerank,
 			LazyRerank:         s.options.LazyRerank,
@@ -1102,6 +1108,9 @@ func experimentalFindContextOptions() []mcp.ToolOption {
 		),
 		mcp.WithBoolean("skip_intent",
 			mcp.Description("Disable the symbolic intent ranker (experiment knob)"),
+		),
+		mcp.WithBoolean("skip_rerank",
+			mcp.Description("Disable cross-encoder reranking of the result order, leaving it in evidence-window selection (experiment knob)"),
 		),
 		mcp.WithBoolean("preserve_full_bodies",
 			mcp.Description("Skip query-relevant evidence trimming and return whole indexed excerpts (experiment knob)"),

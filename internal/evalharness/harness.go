@@ -89,6 +89,7 @@ type Server struct {
 	rerankK      int
 	alpha        string
 	skipIntent   bool
+	skipRerank   bool
 }
 
 // Start spawns the server and completes the MCP initialize handshake.
@@ -156,6 +157,10 @@ func (s *Server) recv(wantID int) (*rpcResp, error) {
 // SetSkipIntent disables the intent ranker for every subsequent call on this
 // server (experiment knob).
 func (s *Server) SetSkipIntent(v bool) { s.skipIntent = v }
+
+// SetSkipRerank drops cross-encoder reranking from the result ORDER while
+// leaving it in evidence-window selection, so the two can be told apart.
+func (s *Server) SetSkipRerank(v bool) { s.skipRerank = v }
 
 // SeedK, when non-zero, overrides the server's seed-pool size for every
 // subsequent call on this server (experiment knob; 0 = server default).
@@ -234,6 +239,9 @@ func (s *Server) Find(query string, maxResults int) (Result, error) {
 	}
 	if s.skipIntent {
 		args["skip_intent"] = true
+	}
+	if s.skipRerank {
+		args["skip_rerank"] = true
 	}
 	if err := s.send(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "tools/call",

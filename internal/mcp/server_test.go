@@ -223,6 +223,6 @@ func TestExperimentalOptionsAreOffByDefault(t *testing.T) {
 	assert.Empty(t, experimentalFindContextOptions())
 
 	t.Setenv(experimentalFindContextTuning, "1")
-	assert.Len(t, experimentalFindContextOptions(), 7,
+	assert.Len(t, experimentalFindContextOptions(), 8,
 		"the ablation harnesses in cmd/ still need every knob")
 }

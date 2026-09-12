@@ -68,6 +68,7 @@ func main() {
 	rerankK := flag.Int("rerank", 0, "cross-encoder pool size (0 = served default 15). Below max_results the tail of the response is never reranked")
 	alpha := flag.String("alpha", "", "seed-vs-PageRank weight 0..1 (empty = served default; 1 = seeds only, which measures what the graph contributes)")
 	skipIntent := flag.Bool("skip-intent", false, "disable the symbolic intent ranker")
+	skipRerank := flag.Bool("skip-rerank", false, "drop cross-encoder reranking from the result ORDER, keeping it in evidence-window selection. -server-args -reranker=none removes both at once and cannot separate them")
 	seedK := flag.Int("seed", 0, "seed candidates per channel before fusion (0 = pipeline default 20). The seed pool is the hard ceiling on reach: nothing downstream can return a file the seeds did not find")
 	serverArgs := flag.String("server-args", "", "extra flags for the served mcp process, space separated, e.g. -reranker=none")
 	only := flag.String("only", "", "score just this instance_id. A distributed worker deletes each snapshot after scoring it, so without this the scorer would re-walk every index still on disk")
@@ -137,6 +138,9 @@ func main() {
 		}
 		if *alpha != "" {
 			srv.SetAlpha(*alpha)
+		}
+		if *skipRerank {
+			srv.SetSkipRerank(true)
 		}
 		if *skipIntent {
 			srv.SetSkipIntent(true)
