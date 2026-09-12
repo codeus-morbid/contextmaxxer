@@ -80,6 +80,41 @@ func (m *mockStore) SetIndexContentVersion(_ context.Context, version int) error
 	return nil
 }
 
+// The indexer asks who points at a file's symbols before replacing them. This
+// mock keeps DeleteSymbolsByFile a no-op, so nothing here models the cascade
+// that makes the question necessary — TestIndexerKeepsEdgeFromUnchangedCaller
+// AfterCalleeEdit covers that against a real store.
+func (m *mockStore) GetCallerEdges(_ context.Context, dstIDs []int64, _ int) (map[int64][]int64, error) {
+	wanted := make(map[int64]bool, len(dstIDs))
+	for _, id := range dstIDs {
+		wanted[id] = true
+	}
+	out := make(map[int64][]int64)
+	for _, e := range m.edges {
+		if wanted[e.Dst] {
+			out[e.Dst] = append(out[e.Dst], e.Src)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetSymbolsByIDs(_ context.Context, ids []int64) ([]store.Symbol, error) {
+	wanted := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	var out []store.Symbol
+	for fileID, syms := range m.symbolsByFile {
+		for _, sym := range syms {
+			if wanted[sym.ID] {
+				sym.FileID = fileID
+				out = append(out, sym)
+			}
+		}
+	}
+	return out, nil
+}
+
 type mockParser struct{}
 
 func (m *mockParser) Parse(_ context.Context, _ []byte, _ string) (*tree_sitter.Tree, error) {

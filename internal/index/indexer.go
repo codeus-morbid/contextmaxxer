@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
@@ -170,6 +171,12 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 	runNamesByLang := make(map[string]map[string]qualifiedNameIDs)
 	loadedLangMaps := make(map[string]bool)
 	var edgeWork []edgeExtractionWork
+	// Files that called into a file being replaced. Deleting a file's symbols
+	// cascades to the edges pointing at them, and a caller whose own bytes did
+	// not change is skipped by hash, so nothing would re-resolve its call.
+	// These are re-parsed for edges once every new symbol id exists.
+	edgeDependents := make(map[int64]bool)
+	reindexedFiles := make(map[int64]bool)
 
 	// DECISION(2026-08): every parsed tree is registered for closing here.
 	// tree_sitter.Tree wraps a C AST that the binding frees only in Close and
@@ -246,6 +253,7 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 					idx.log.Warn("get old embedding error", "symbolID", old.ID, "err", err)
 				}
 			}
+			idx.collectEdgeDependents(ctx, oldSymbols, prev.ID, edgeDependents)
 			if err := idx.store.DeleteSymbolsByFile(ctx, prev.ID); err != nil {
 				idx.log.Warn("delete stale symbols error", "id", prev.ID, "err", err)
 			}
@@ -262,6 +270,7 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 			idx.log.Warn("save file error", "path", rec.RelPath, "err", err)
 			continue
 		}
+		reindexedFiles[fileID] = true
 
 		symbols := extractor.Symbols(tree, source)
 		for i := range symbols {
@@ -387,6 +396,8 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 		stats.Edges += len(edges)
 	}
 
+	stats.Edges += idx.repairDependentEdges(ctx, root, edgeDependents, reindexedFiles, existingList, &openTrees)
+
 	for path, f := range existing {
 		if !seen[path] {
 			if err := idx.store.DeleteFile(ctx, f.ID); err != nil {
@@ -406,6 +417,150 @@ func (idx *Indexer) Index(ctx context.Context, root string) (Stats, error) {
 
 	stats.Duration = time.Since(start)
 	return stats, nil
+}
+
+// collectEdgeDependents records which OTHER files hold edges into the symbols
+// that are about to be deleted. Their call sites are still in their source;
+// only the ids those calls resolved to are going away.
+func (idx *Indexer) collectEdgeDependents(ctx context.Context, oldSymbols []store.Symbol, fileID int64, out map[int64]bool) {
+	if len(oldSymbols) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(oldSymbols))
+	for _, sym := range oldSymbols {
+		ids = append(ids, sym.ID)
+	}
+	callers, err := idx.store.GetCallerEdges(ctx, ids, 0)
+	if err != nil {
+		idx.log.Warn("get caller edges error", "fileID", fileID, "err", err)
+		return
+	}
+	srcIDs := make([]int64, 0, len(callers))
+	for _, srcs := range callers {
+		srcIDs = append(srcIDs, srcs...)
+	}
+	if len(srcIDs) == 0 {
+		return
+	}
+	srcSymbols, err := idx.store.GetSymbolsByIDs(ctx, srcIDs)
+	if err != nil {
+		idx.log.Warn("get caller symbols error", "fileID", fileID, "err", err)
+		return
+	}
+	for _, sym := range srcSymbols {
+		if sym.FileID != fileID {
+			out[sym.FileID] = true
+		}
+	}
+}
+
+// repairDependentEdges re-extracts edges out of files that were skipped by
+// hash but lost edges when a callee they point at was replaced. Without it an
+// incremental run silently shrinks the call graph: the caller's bytes are
+// unchanged, so nothing re-reads it, and its edge stays deleted until someone
+// reindexes with --force.
+//
+// Names resolve against the database rather than against this run's map: every
+// symbol written by this run is already committed, so the database is the
+// complete picture and does not depend on which files happened to change.
+func (idx *Indexer) repairDependentEdges(
+	ctx context.Context,
+	root string,
+	dependents, reindexed map[int64]bool,
+	files []store.File,
+	openTrees *[]*tree_sitter.Tree,
+) int {
+	if len(dependents) == 0 {
+		return 0
+	}
+	byID := make(map[int64]store.File, len(files))
+	for _, f := range files {
+		byID[f.ID] = f
+	}
+	namesByLang := make(map[string]map[string]int64)
+	repaired := 0
+
+	for fileID := range dependents {
+		if reindexed[fileID] {
+			continue
+		}
+		file, ok := byID[fileID]
+		if !ok {
+			continue
+		}
+		extractor, ok := idx.extractor(file.Language)
+		if !ok {
+			continue
+		}
+		source, err := os.ReadFile(filepath.Join(root, file.Path))
+		if err != nil {
+			idx.log.Warn("reread caller file error", "path", file.Path, "err", err)
+			continue
+		}
+		tree, err := idx.parser.Parse(ctx, source, file.Language)
+		if err != nil {
+			idx.log.Warn("reparse caller file error", "path", file.Path, "err", err)
+			continue
+		}
+		*openTrees = append(*openTrees, tree)
+
+		nameToID, ok := namesByLang[file.Language]
+		if !ok {
+			nameToID = idx.unambiguousNamesFromStore(ctx, file.Language)
+			namesByLang[file.Language] = nameToID
+		}
+		symbols, err := idx.store.ListSymbolsByFile(ctx, fileID)
+		if err != nil {
+			idx.log.Warn("list caller symbols error", "fileID", fileID, "err", err)
+			continue
+		}
+		// Same local-override rule as the main pass: a duplicate qualified name
+		// resolves to this file's symbol while extracting this file.
+		restore := make(map[string]previousName, len(symbols))
+		for _, sym := range symbols {
+			old, exists := nameToID[sym.QualifiedName]
+			restore[sym.QualifiedName] = previousName{id: old, exists: exists}
+			nameToID[sym.QualifiedName] = sym.ID
+		}
+		edges := extractor.Edges(tree, source, nameToID)
+		for name, old := range restore {
+			if old.exists {
+				nameToID[name] = old.id
+			} else {
+				delete(nameToID, name)
+			}
+		}
+		if len(edges) == 0 {
+			continue
+		}
+		if err := idx.store.SaveEdgeBatch(ctx, edges); err != nil {
+			idx.log.Warn("save repaired edge batch error", "path", file.Path, "err", err)
+			continue
+		}
+		repaired += len(edges)
+	}
+	return repaired
+}
+
+type previousName struct {
+	id     int64
+	exists bool
+}
+
+// unambiguousNamesFromStore maps every qualified name of a language to its
+// symbol id, dropping the names more than one symbol claims — the same rule
+// the main pass applies, so a repaired edge and a fresh one agree.
+func (idx *Indexer) unambiguousNamesFromStore(ctx context.Context, language string) map[string]int64 {
+	syms, err := idx.store.ListSymbolsByLanguage(ctx, language)
+	if err != nil {
+		idx.log.Warn("list symbols by language error", "lang", language, "err", err)
+		return map[string]int64{}
+	}
+	names := make(map[string]qualifiedNameIDs, len(syms))
+	for _, sym := range syms {
+		addQualifiedNameID(names, sym.QualifiedName, sym.ID)
+	}
+	return unambiguousQualifiedNames(names)
 }
 
 func embeddingTextHash(path, language string, sym store.Symbol) string {
