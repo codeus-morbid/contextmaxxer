@@ -14,8 +14,8 @@ callees and exact call sites already attached.
 Scored on **all 848 instances** of
 [SWE-Explore](https://arxiv.org/html/2606.07297v1) — an external benchmark
 whose baselines are the paper's own, not ours — it reaches **2.4× the file
-coverage of the best classical retriever** at the default five results, and
-3.8× at the list length the benchmark ranks. In paired agent runs on
+coverage of the best classical retriever** at the five results the benchmark
+compares every method at, which is also what the product serves. In paired agent runs on
 CockroachDB's 90K symbols it answered every architecture question with **zero
 source-file reads**: the agent cited from what the tool returned and opened
 nothing by hand, which is the result that reproduces in every run.
@@ -189,10 +189,12 @@ returns against line-level ground truth distilled from the trajectories of
 agents that actually solved the task — what a solver had to READ, not what the
 patch changed. Every baseline below is the paper's own number.
 
-All 848 instances, line budget B = 500. Two of our columns: the benchmark
-ranks a list, so the **list of 20** is the like-for-like comparison against
-baselines that also return ranked lists — and the **served default of 5** is
-what the product actually hands an agent, measured the same way.
+All 848 instances, line budget B = 500. The paper fixes K = 5 for every
+explorer it compares ("each explorer is asked to return its five most relevant
+regions"), so the **served default of 5** — which is also what the product
+hands an agent — is the column to read against the baselines. The **list of
+20** is outside that protocol: it is published because it shows what a longer
+list reaches, not as a comparison with methods that were capped at five.
 
 | | **Ctxmaxxer**<br>list of 20 | **Ctxmaxxer**<br>served (5) | BM25 | TF-IDF | Potion (RAG) | CoSIL | Claude Code | Oracle |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -201,13 +203,19 @@ what the product actually hands an agent, measured the same way.
 | Rec_l | **0.047** | 0.036 | 0.021 | 0.049 | 0.025 | 0.788 | 0.154 | 0.953 |
 | HitRegion | **0.375** | 0.267 | 0.065 | 0.121 | 0.069 | 0.544 | 0.531 | 0.915 |
 
-Several times every non-agentic retriever on both columns — the served default
-still reaches 2.4× the best of them. At the list of 20 the file coverage comes
-within reach of [CoSIL](https://www.arxiv.org/abs/2503.22424v1), the closest
-comparison in kind because it localises from a call graph too; at the served
-five it does not, and that gap is real. CoSIL puts a model *inside* the search
-loop, up to ten calls an issue; here the graph is built once at indexing time
-and a query needs no model at all.
+Several times every non-agentic retriever on both columns — at the compared
+five, 2.4× the best of them. Against
+[CoSIL](https://www.arxiv.org/abs/2503.22424v1), the closest comparison in kind
+because it localises from a call graph too, the served five does not reach it
+on any column, and that gap is real: 0.342 file coverage against 0.544. CoSIL
+puts a model *inside* the search loop, up to ten calls an issue; here the graph
+is built once at indexing time and a query needs no model at all.
+
+One caveat this table does not resolve: the benchmark counts regions, and a
+result here is a symbol that may show several non-adjacent windows, so five
+results can carry more than five regions. The line-level metrics charge only
+the lines actually shown, but the region count is not normalised to the
+paper's unit, and we have not measured how far apart the two are.
 
 Read the rest honestly:
 

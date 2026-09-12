@@ -3,6 +3,35 @@
 All notable changes to Contextmaxxer are documented here. The project follows
 [Semantic Versioning](https://semver.org/) once public tags are published.
 
+## Unreleased
+
+### Fixed
+
+- **Incremental indexing dropped incoming call edges.** Editing a file deletes
+  its symbols, and the foreign key takes every edge pointing at them; a caller
+  whose own bytes did not change is skipped by hash, so its call was never
+  re-resolved and the graph shrank on every `--watch` save until a `--force`
+  reindex. Files that call into a replaced file are now re-parsed for edges
+  once the new symbol ids exist.
+- **Markdown numbered trimmed bodies straight through the gap.** A body shown
+  as several windows carries the real line numbers in JSON and, until now, a
+  continuous count in markdown — which is the default encoding — so every line
+  after the first gap was labelled with a line it is not on, in the output an
+  agent cites from.
+- **expand_context could hydrate a different symbol.** Symbol ids are SQLite
+  rowids and are reused after a delete, so a request id held across a reindex
+  could resolve to whatever took the id, returning one symbol's body under the
+  name of another. The server now checks that the id still names the symbol
+  the search returned, and reports a stale request instead; line spans come
+  from the index rather than the cache, so an edit above a symbol no longer
+  shifts what it cites.
+
+### Changed
+
+- The SWE-Explore table is read against the served five. The paper fixes K = 5
+  for every explorer it compares, so the list of 20 is outside that protocol
+  and is no longer presented as the like-for-like column.
+
 ## 0.1.1 - 2026-09-12
 
 ### Added
