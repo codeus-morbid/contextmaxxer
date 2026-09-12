@@ -686,6 +686,20 @@ func (s *Server) startExpansion(ctx context.Context, requestID string, rank int)
 	if s.retriever == nil || target.SymbolID == 0 {
 		return expansionPage{}, fmt.Errorf("rank %d cannot be hydrated: missing indexed symbol identity", rank)
 	}
+	// The cache holds an id, and an id outlives the symbol it was taken from:
+	// after a reindex SQLite hands the same rowid to whatever is written next.
+	// Hydrating without this check returns one symbol's code under another
+	// symbol's name — worse than refusing, because nothing in the answer says
+	// it is wrong.
+	current, err := s.retriever.SymbolIdentity(ctx, target.SymbolID)
+	if err != nil {
+		return expansionPage{}, fmt.Errorf("hydrate rank %d: %w", rank, err)
+	}
+	if current.QualifiedName != target.QualifiedName || current.Kind != target.Kind {
+		return expansionPage{}, fmt.Errorf(
+			"rank %d is stale: that result named %s, and the index now has %s in its place; rerun find_context",
+			rank, target.QualifiedName, current.QualifiedName)
+	}
 	body, err := s.retriever.GetSymbolBody(ctx, target.SymbolID)
 	if err != nil {
 		return expansionPage{}, fmt.Errorf("hydrate rank %d: %w", rank, err)
@@ -695,7 +709,9 @@ func (s *Server) startExpansion(ctx context.Context, requestID string, rank int)
 		Rank:      rank,
 		Symbol: retrieve.ScoredResult{
 			SymbolID: target.SymbolID, File: target.File, QualifiedName: target.QualifiedName,
-			Kind: target.Kind, StartLine: target.StartLine, EndLine: target.EndLine,
+			// Lines come from the index, not the cache: an edit above this
+			// symbol moves it, and the cached span would cite the old place.
+			Kind: target.Kind, StartLine: current.StartLine, EndLine: current.EndLine,
 		},
 		Body:   body.Body,
 		SHA256: body.SHA256,
@@ -806,10 +822,6 @@ func (s *Server) recordFeedback(ctx context.Context, event feedback.FeedbackEven
 	return s.feedback.RecordFeedback(event)
 }
 
-// numberLines prefixes each line of body with its real file line number
-// (starting at startLine), in the number→content style of file readers, so the
-// agent can cite an exact file:line straight from the result without re-opening
-// the file. Empty bodies pass through unchanged.
 // renderMarkdown encodes the response as agent-facing markdown cards. Same
 // information as the JSON encoding at ~25-30% fewer tokens (no quote/brace/
 // escape overhead, no per-field names), and models read fenced code more
@@ -876,7 +888,7 @@ func renderMarkdown(requestID string, mode retrieve.OutputMode, result retrieve.
 			if start == 0 {
 				start = sr.StartLine
 			}
-			fmt.Fprintf(&b, "```\n%s\n```\n", numberLines(sr.Body, start))
+			fmt.Fprintf(&b, "```\n%s\n```\n", numberBody(sr.Body, start, sr.BodySegments))
 		}
 		writeRefs("callers", sr.Callers, sr.CallersTotal)
 		writeRefs("callees", sr.Callees, sr.CalleesTotal)
@@ -948,15 +960,20 @@ func numberExpansionLines(body string, startLine, startColumn int) string {
 	return b.String()
 }
 
-func numberLines(body string, startLine int) string {
-	return numberBody(body, startLine, nil)
-}
-
-// numberBody numbers a body with its real file lines. With segments the body
-// carries several windows joined by the gap marker, and the counter has to jump
-// at each marker: numbering straight through would put a confident, wrong line
-// number on every line after the first gap, which is worse than not numbering
-// at all — the agent cites those numbers.
+// numberBody prefixes each line with its real file line number, in the
+// number→content style of file readers, so the agent can cite an exact
+// file:line without re-opening the file. Empty bodies pass through unchanged.
+//
+// With segments the body carries several windows joined by the gap marker, and
+// the counter has to jump at each marker: numbering straight through would put
+// a confident, wrong line number on every line after the first gap, which is
+// worse than not numbering at all — the agent cites those numbers.
+//
+// DECISION(2026-09): every encoding calls this one function with the segments.
+// A numberLines(body, start) wrapper that passed nil used to stand here, and
+// markdown — the default encoding — called it, so the guard above protected
+// only the JSON path. ASSUMES: a body's windows are always described by
+// BodySegments. REVISIT IF: a caller needs numbering without segment data.
 func numberBody(body string, startLine int, segments []retrieve.BodySegment) string {
 	if body == "" {
 		return body

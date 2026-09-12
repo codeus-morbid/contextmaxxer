@@ -365,6 +365,21 @@ func (r *Retriever) GetSymbolBody(ctx context.Context, symbolID int64) (store.Sy
 	return r.store.GetSymbolBody(ctx, symbolID)
 }
 
+// SymbolIdentity reports which symbol an id names right now. A caller holding
+// an id from an earlier search must check it before using the body behind it:
+// symbols.id is the SQLite rowid, which is handed out again after a delete, so
+// a reindex can move an id onto a different symbol.
+func (r *Retriever) SymbolIdentity(ctx context.Context, symbolID int64) (store.Symbol, error) {
+	syms, err := r.store.GetSymbolsByIDs(ctx, []int64{symbolID})
+	if err != nil {
+		return store.Symbol{}, err
+	}
+	if len(syms) == 0 {
+		return store.Symbol{}, store.ErrNotFound
+	}
+	return syms[0], nil
+}
+
 // FindRelatedEdits reports where else the names an edit touched already live.
 // It runs no embedding and no ranking pipeline: only rare-name lookups.
 func (r *Retriever) FindRelatedEdits(ctx context.Context, changed, exclude []string, limit int) ([]RelatedFile, error) {
