@@ -98,10 +98,11 @@ the bottleneck. On small projects a strong model with grep is already cheap.
 
 1. Download the archive for your platform from the
    [latest release](https://github.com/codeus-morbid/contextmaxxer/releases/latest)
-   — Windows amd64 and Linux amd64, each with `checksums.txt`. Verify it, unpack
-   it, and put `contextmaxxer` on PATH. [INSTALL.md](INSTALL.md) has the
-   per-platform commands; [Build from source](#build-from-source) has the
-   toolchain list if you would rather build it yourself.
+   — Windows amd64, Linux amd64 and macOS arm64, each with `checksums.txt`.
+   Verify it, unpack it, and put `contextmaxxer` on PATH. [INSTALL.md](INSTALL.md)
+   has the per-platform commands, including clearing the Gatekeeper mark on
+   macOS; [Build from source](#build-from-source) has the toolchain list if you
+   would rather build it yourself.
 2. Pre-download the models and ONNX Runtime:
 
        contextmaxxer warmup
@@ -144,7 +145,15 @@ under tens of milliseconds.
 
 The MCP server exposes:
 
-- **find_context** — ranked, line-numbered symbols with graph context;
+- **find_context** — ranked, line-numbered symbols with graph context. A query
+  shaped like `path/to/file.go:142` — or a whole `rg -n` output line pasted
+  verbatim — is looked up rather than searched: it returns the symbol enclosing
+  that line with its callers and callees, runs no embedding and no reranking,
+  and is the cheapest call the server serves. It is the door an agent holding a
+  grep hit would otherwise have no way to open;
+- **find_related_edits** — given the diff just made, where else the names it
+  touched already live, ranked by how rare they are. Names at the common end
+  are everywhere and evidence of nothing, so they are dropped;
 - **expand_context** — the full indexed body of one result, when its excerpt
   cut the branch you needed; no second semantic search;
 - **continue_context** — the next page when a response reports `status:more`;
@@ -427,14 +436,17 @@ Build output goes to .task/build; it does not overwrite a binary in the
 repository root.
 
 The bootstrap scripts fetch one pinned upstream tokenizer commit and build it
-with a pinned Rust toolchain. Windows requires a MinGW-compatible gcc.
+with a pinned Rust toolchain, for whichever host they run on: Linux amd64,
+Windows amd64 or macOS arm64. Windows requires a MinGW-compatible gcc, macOS
+the Xcode command line tools. On Intel macOS the script stops and says why
+rather than failing later on a missing download.
 
 ## Current limitations
 
 - The first warmup downloads several hundred megabytes of models and runtimes.
-- Windows amd64 and Linux amd64 are the initial release targets. macOS is not
-  packaged yet, and Intel macOS is unsupported outright — upstream ONNX Runtime
-  publishes no x86_64 darwin build for the pinned version.
+- Windows amd64, Linux amd64 and macOS arm64 are the release targets. Intel
+  macOS is unsupported outright — upstream ONNX Runtime publishes no x86_64
+  darwin build for the pinned version.
 - CPU cross-encoder reranking is the dominant part of query latency.
 - Benefits are modest on small repositories.
 - Public reproduction currently covers the product's self-eval and the pinned
@@ -442,15 +454,16 @@ with a pinned Rust toolchain. Windows requires a MinGW-compatible gcc.
 
 ## Project status
 
-Contextmaxxer is at **v0.1.0**, its first public release. Linux and Windows
-amd64 archives are built by CI on a tag and published with checksums; the
-release is gated on the packaged binary answering a real MCP handshake, not
-merely compiling. The retrieval engine is actively dogfooded.
+Contextmaxxer is at **v0.1.1**. Linux amd64, Windows amd64 and macOS arm64
+archives are built by CI on a tag and published with checksums; the release is
+gated on the packaged binary answering a real MCP handshake, not merely
+compiling. The retrieval engine is actively dogfooded.
 
 The 0.x is meant literally. What the tool returns is measured against an
-external benchmark on all 848 instances, but whether it makes an agent write
-better patches has not been measured, and there is no external usage to learn
-from yet. Both are the next things worth doing rather than caveats to skip.
+external benchmark on all 848 instances; whether it makes an agent write better
+patches has had one early read on 25 SWE-bench instances and nothing larger,
+and there is no external usage to learn from yet. Both are the next things
+worth doing rather than caveats to skip.
 
 Detailed references:
 

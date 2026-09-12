@@ -1,7 +1,9 @@
 # Install Contextmaxxer
 
-This guide is safe to hand to a coding agent. Contextmaxxer supports Windows
-amd64 and Linux amd64; macOS packages are not published yet.
+This guide is safe to hand to a coding agent. Contextmaxxer ships archives for
+Windows amd64, Linux amd64 and macOS arm64. Intel macOS has no archive and no
+source-build path: upstream ONNX Runtime publishes no x86_64 darwin build for
+the pinned version.
 
 ## 1. Install the binary
 
@@ -10,14 +12,23 @@ Download the archive and `checksums.txt` from the
 
 - `contextmaxxer_<version>_windows_amd64.zip`
 - `contextmaxxer_<version>_linux_amd64.tar.gz`
+- `contextmaxxer_<version>_darwin_arm64.tar.gz`
 
-Verify the archive with `Get-FileHash` on Windows or `sha256sum` on Linux, then
-put `contextmaxxer.exe` or `contextmaxxer` on `PATH`. On Linux, make it
-executable first:
+Verify the archive with `Get-FileHash` on Windows or `sha256sum` on Linux and
+macOS, then put `contextmaxxer.exe` or `contextmaxxer` on `PATH`. On Linux and
+macOS, make it executable first:
 
 ```text
 chmod +x contextmaxxer
 contextmaxxer --version
+```
+
+The macOS binary is neither signed nor notarized. A browser marks what it
+downloads, so Gatekeeper will refuse to run it with "the developer cannot be
+verified" — clear the mark, or download with `curl`, which sets no mark:
+
+```text
+xattr -d com.apple.quarantine contextmaxxer
 ```
 
 To build it yourself instead, follow the source-build instructions in
