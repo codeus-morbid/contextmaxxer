@@ -39,6 +39,12 @@ All notable changes to Contextmaxxer are documented here. The project follows
 
 ### Changed
 
+- **find_related_edits is experimental.** It is no longer on the default tool
+  list and is registered only with `CONTEXTMAXXER_EXPERIMENTAL_TOOLS=1`. On
+  multi-file fixes it ranks the missing file first in about one case in six,
+  and on single-file fixes, where nothing else needs to change, it still
+  returns candidates most of the time — while its description asks for it
+  after every edit.
 - **The discovery gate no longer holds back Glob.** It asks the agent to call
   find_context before searching, and a file-name search is not something
   find_context answers. In 1,640 searches from real sessions Glob was 49 of the

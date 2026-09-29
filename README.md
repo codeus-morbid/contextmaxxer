@@ -151,13 +151,15 @@ The MCP server exposes:
   that line with its callers and callees, runs no embedding and no reranking,
   and is the cheapest call the server serves. It is the door an agent holding a
   grep hit would otherwise have no way to open;
-- **find_related_edits** — given the diff just made, where else the names it
-  touched already live, ranked by how rare they are. Names at the common end
-  are everywhere and evidence of nothing, so they are dropped;
 - **expand_context** — the full indexed body of one result, when its excerpt
   cut the branch you needed; no second semantic search;
 - **continue_context** — the next page when a response reports `status:more`;
 - **record_feedback** — optional usefulness labels tied to a retrieval request.
+
+`find_related_edits` — given a diff, the other files that carry the names it
+changed — is available with `CONTEXTMAXXER_EXPERIMENTAL_TOOLS=1`. It is off by
+default because it cannot yet tell an edit that is complete from one that is
+not.
 
 ### What it costs to keep running
 

@@ -39,15 +39,22 @@ const relatedProbeK = 120
 // FindRelatedEdits answers "I changed these names here, where else do they
 // live" — the question completeness actually turns on.
 //
-// DECISION(2026-09): the input is the edit, not the task. Three detectors that
-// predicted a multi-file change BEFORE the work — from the issue text, from the
-// directory tree, from a file's whole vocabulary — all landed at 25-63% recall
-// with a 33-36% false-alarm rate, too weak to assert. Scored the same way but
-// fed the names an edit actually touched, six blind targets returned at ranks
-// 1, 1, 1, 2, 2 and 7. The difference is that the input stopped being a guess:
-// after the first edit the change is a fact.
-// ASSUMES: a name shared by few symbols marks a real relationship. REVISIT IF:
-// a repository's naming is so uniform that rare names are accidental.
+// DECISION(2026-09): experimental, off the default tool list. The input is the
+// edit rather than the task, which was the reason to build it: detectors that
+// guessed a multi-file change before any work landed at 25-63% recall with a
+// 33-36% false-alarm rate, and six targets fed the names an edit touched came
+// back at ranks 1, 1, 1, 2, 2 and 7. That sample did not hold. Over 62
+// multi-file SWE-bench Verified fixes, given only the first file's edit, a
+// missing file ranks first in 16% of cases and in the top five in 35%; over
+// 100 single-file fixes, where nothing else needs to change, it still returns
+// candidates 85% of the time, eight on average. Promoting files from the
+// edited file's directory lifts the top five to 45%, but such a candidate is
+// as common when nothing else needs changing (62%) as when something does
+// (60%), so the answer carries no signal that the edit is incomplete — and the
+// tool description asks for it after every edit.
+// ASSUMES: rare shared names are too weak a link to say a change is unfinished.
+// REVISIT IF: a signal that separates an unfinished edit from a finished one is
+// found — co-change history is the one not yet tried.
 func FindRelatedEdits(ctx context.Context, st Store, changed []string, exclude []string, limit int) ([]RelatedFile, error) {
 	if limit <= 0 {
 		limit = 5

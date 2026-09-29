@@ -541,37 +541,11 @@ func (s *Server) Serve(ctx context.Context) error {
 		return mcp.NewToolResultText(renderExpansionPage(page)), nil
 	})
 
-	relatedTool := mcp.NewTool("find_related_edits",
-		mcp.WithDescription(`Call this AFTER making an edit, before reporting the work done: it reports where else the names you just changed already live, which is how a change that belongs in several places is caught. Paste the diff you produced, or name the identifiers you renamed or introduced. Ranking is by rarity, so a name carried by most of the repository is ignored and a name carried by two symbols decides the answer. This runs no embedding and no semantic search.`),
-		mcp.WithString("changed",
-			mcp.Required(),
-			mcp.Description("The diff you just made, pasted verbatim, or the identifiers the edit touched. From a diff only added and removed lines are read: context lines describe code that stayed the same."),
-		),
-		mcp.WithString("exclude",
-			mcp.Description("Comma-separated paths you have already edited, so they are not offered back to you."),
-		),
-		mcp.WithNumber("max_results",
-			mcp.Description("How many related files to return (default 5)"),
-		),
-	)
-	srv.AddTool(relatedTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		changed, err := req.RequireString("changed")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		var exclude []string
-		for _, p := range strings.Split(req.GetString("exclude", ""), ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				exclude = append(exclude, p)
-			}
-		}
-		limit := req.GetInt("max_results", 5)
-		related, err := s.retriever.FindRelatedEdits(ctx, []string{changed}, exclude, limit)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return mcp.NewToolResultText(renderRelated(related)), nil
-	})
+	// find_related_edits is experimental: see the DECISION on
+	// retrieve.FindRelatedEdits for why it is off the default tool list.
+	if os.Getenv(experimentalFindContextTuning) != "" {
+		s.addRelatedEditsTool(srv)
+	}
 
 	continueTool := mcp.NewTool("continue_context",
 		mcp.WithDescription(`Return the next lossless page from expand_context. Call this whenever an expansion returns status:more, using next_cursor verbatim, until status:complete. It performs no search and skipping it leaves the symbol body incomplete.`),
@@ -1063,6 +1037,42 @@ func visibleLineCount(sr retrieve.ScoredResult) int {
 // to judge with. An empty result says so plainly rather than returning nothing:
 // silence reads as "the tool failed", while "no other place carries these
 // names" is a finding the agent can act on.
+// addRelatedEditsTool registers find_related_edits. It is called only when
+// CONTEXTMAXXER_EXPERIMENTAL_TOOLS is set.
+func (s *Server) addRelatedEditsTool(srv *mcpserver.MCPServer) {
+	relatedTool := mcp.NewTool("find_related_edits",
+		mcp.WithDescription(`Call this AFTER making an edit, before reporting the work done: it reports where else the names you just changed already live, which is how a change that belongs in several places is caught. Paste the diff you produced, or name the identifiers you renamed or introduced. Ranking is by rarity, so a name carried by most of the repository is ignored and a name carried by two symbols decides the answer. This runs no embedding and no semantic search.`),
+		mcp.WithString("changed",
+			mcp.Required(),
+			mcp.Description("The diff you just made, pasted verbatim, or the identifiers the edit touched. From a diff only added and removed lines are read: context lines describe code that stayed the same."),
+		),
+		mcp.WithString("exclude",
+			mcp.Description("Comma-separated paths you have already edited, so they are not offered back to you."),
+		),
+		mcp.WithNumber("max_results",
+			mcp.Description("How many related files to return (default 5)"),
+		),
+	)
+	srv.AddTool(relatedTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		changed, err := req.RequireString("changed")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		var exclude []string
+		for _, p := range strings.Split(req.GetString("exclude", ""), ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				exclude = append(exclude, p)
+			}
+		}
+		limit := req.GetInt("max_results", 5)
+		related, err := s.retriever.FindRelatedEdits(ctx, []string{changed}, exclude, limit)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(renderRelated(related)), nil
+	})
+}
+
 func renderRelated(related []retrieve.RelatedFile) string {
 	if len(related) == 0 {
 		return "no other indexed file carries the names you changed: this edit looks self-contained.\n"
