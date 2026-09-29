@@ -77,6 +77,7 @@ func main() {
 	literalSlots := flag.Int("literal", 0, "hand this many of the last answer slots to files where several of the query's identifiers occur together (0 = off). Measured to need an index built with --include-tests; see internal/retrieve/literal.go")
 	anchorExpand := flag.Int("anchor-expand", 0, "add this many 1-hop graph neighbours of the top seeds to the candidate pool (0 = off). 64.5%% of missed gold that IS indexed sits within 1-2 hops of something we returned")
 	dumpFiles := flag.Bool("dump-files", false, "print instance, returned files and gold files as TSV, for offline analysis of what was missed")
+	dumpCandidates := flag.String("dump-candidates", "", "write one JSON line per instance to this file: the query, gold files, every returned candidate with its visible span and score, and the server's confidence")
 	verbose := flag.Bool("v", false, "print every scored instance")
 	csvOut := flag.Bool("csv", false, "print one machine-readable row per instance instead of a summary. Runs split across machines must be merged from these rows: averaging each machine's summary weights small shards equally with large ones")
 	flag.Parse()
@@ -85,6 +86,15 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "manifest:", err)
 		os.Exit(1)
+	}
+	var candidateOut *os.File
+	if *dumpCandidates != "" {
+		candidateOut, err = os.Create(*dumpCandidates)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "dump-candidates:", err)
+			os.Exit(1)
+		}
+		defer candidateOut.Close()
 	}
 
 	var (
@@ -198,6 +208,56 @@ func main() {
 		if m.completeInOneCall {
 			completeOneCall++
 		}
+		if *dumpCandidates != "" {
+			// One JSON line per instance: what was asked, what came back in
+			// order with the span the agent would actually see, and our own
+			// confidence signal. Enough to put a second judge over the same
+			// candidates offline without re-running retrieval.
+			type candidate struct {
+				Name      string  `json:"name"`
+				File      string  `json:"file"`
+				Lines     string  `json:"lines"`
+				Visible   string  `json:"visible"`
+				Score     float32 `json:"score"`
+				Relevance float32 `json:"relevance"`
+			}
+			row := struct {
+				Instance   string      `json:"instance"`
+				Repo       string      `json:"repo"`
+				Query      string      `json:"query"`
+				QueryMode  string      `json:"query_mode"`
+				Gold       []string    `json:"gold"`
+				Confidence string      `json:"confidence"`
+				TopGap     float32     `json:"top_gap"`
+				Candidates []candidate `json:"candidates"`
+			}{
+				Instance: inst.InstanceID, Repo: repoRoot,
+				Query: shapeQuery(inst.Query, *queryMode), QueryMode: *queryMode,
+				Confidence: res.Confidence, TopGap: res.TopGap,
+			}
+			for _, g := range inst.GoldFiles {
+				row.Gold = append(row.Gold, normPath(g))
+			}
+			for i := 0; i < len(res.Files); i++ {
+				c := candidate{Name: res.Names[i], File: normPath(res.Files[i])}
+				if i < len(res.Lines) {
+					c.Lines = res.Lines[i]
+				}
+				if i < len(res.Visible) {
+					c.Visible = res.Visible[i]
+				}
+				if i < len(res.Scores) {
+					c.Score = res.Scores[i]
+				}
+				if i < len(res.Relevance) {
+					c.Relevance = res.Relevance[i]
+				}
+				row.Candidates = append(row.Candidates, c)
+			}
+			if b, err := json.Marshal(row); err == nil {
+				candidateOut.Write(append(b, '\n'))
+			}
+		}
 		if *dumpFiles {
 			// instance <TAB> returned files <TAB> gold files. Enough to ask,
 			// offline, whether a missed gold file was reachable through the graph
@@ -239,8 +299,12 @@ func main() {
 	}
 
 	f := float64(scored)
-	fmt.Printf("\nscored=%d  (skipped: no index %d, no gold %d; errors %d)  max_results=%d\n",
-		scored, skippedNoIndex, skippedNoGold, errored, *maxResults)
+	// The query mode belongs in the summary, not only in the command line. A
+	// stage measured on the raw issue report and the same stage measured on
+	// the title do not agree — the cross-encoder changes sign between them —
+	// so a saved run that does not say which one it used cannot be read later.
+	fmt.Printf("\nscored=%d  (skipped: no index %d, no gold %d; errors %d)  max_results=%d  query=%s\n",
+		scored, skippedNoIndex, skippedNoGold, errored, *maxResults, *queryMode)
 	fmt.Printf("HitFile        %.3f   at least one gold file in the returned list\n", sumHitFile/f)
 	fmt.Printf("File recall    %.3f   share of gold files returned\n", sumFileRecall/f)
 	fmt.Printf("nDCG@%-3d      %.3f   ranking quality over file relevance\n", *maxResults, sumNDCG/f)
