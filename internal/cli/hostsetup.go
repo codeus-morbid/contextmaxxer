@@ -145,6 +145,41 @@ func mergeMCPServers(path, cmdPath, dbPath string) (bool, error) {
 	return true, saveJSONObject(path, doc)
 }
 
+// preSearchMatcher is the tool set the discovery gate holds back until
+// find_context has answered.
+//
+// DECISION(2026-09): Grep only. Glob searches file names, and find_context
+// ranks symbols by what they do, so the advice the gate gives — call
+// find_context first — cannot apply to it. In 1,640 searches from real
+// sessions, Glob was 49 of the 103 first searches of a session, which are the
+// ones the gate stops, so nearly half its refusals spent a turn for nothing.
+// The same sessions show agents do not grep in prose either — 99% of Grep
+// patterns are literal names or regexes — so there is nothing in the pattern
+// text worth routing on; the gate stays a session-level rule.
+// ASSUMES: an agent stopped on Glob rarely went on to a useful find_context.
+// REVISIT IF: the adoption report shows find_context calls falling after this
+// change by more than the blocked-Glob turns it saves.
+const preSearchMatcher = "Grep"
+
+// legacyPreSearchMatcher is what installs before 2026-09 wrote.
+const legacyPreSearchMatcher = "Grep|Glob"
+
+// narrowLegacyGateMatcher moves an existing gate entry off the matcher this
+// installer used to write. The merge treats a present hook as wired, so
+// without this the narrower gate would never reach an existing install. Only
+// the exact legacy value is rewritten; a matcher the user chose is theirs.
+func narrowLegacyGateMatcher(entry any) bool {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	if got, _ := m["matcher"].(string); got != legacyPreSearchMatcher {
+		return false
+	}
+	m["matcher"] = preSearchMatcher
+	return true
+}
+
 // mergeClaudeHooks appends the grep-gate hook pair unless already present
 // (matched by the distinctive command substring, so user edits survive).
 func mergeClaudeHooks(path, cmdPath string) (bool, error) {
@@ -177,6 +212,9 @@ func mergeClaudeHooks(path, cmdPath string) (bool, error) {
 			if repairShellPathsInPlace(e) {
 				changed = true
 			}
+			if marker == "hook pre-search" && narrowLegacyGateMatcher(e) {
+				changed = true
+			}
 			return
 		}
 		arr = append(arr, map[string]any{
@@ -189,7 +227,7 @@ func mergeClaudeHooks(path, cmdPath string) (bool, error) {
 	// The hook command runs through a shell, which both splits on spaces and
 	// eats backslashes. See shellCommandPath.
 	quoted := shellCommandPath(cmdPath)
-	add("PreToolUse", "Grep|Glob", quoted+" hook pre-search")
+	add("PreToolUse", preSearchMatcher, quoted+" hook pre-search")
 	add("PostToolUse", "mcp__.*__find_context", quoted+" hook post-find")
 	// The moment after a grep is the one moment the agent holds a position and
 	// this tool answers it by lookup. Matched on Grep alone: Glob returns

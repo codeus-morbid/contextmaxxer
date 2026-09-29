@@ -39,6 +39,13 @@ All notable changes to Contextmaxxer are documented here. The project follows
 
 ### Changed
 
+- **The discovery gate no longer holds back Glob.** It asks the agent to call
+  find_context before searching, and a file-name search is not something
+  find_context answers. In 1,640 searches from real sessions Glob was 49 of the
+  103 first searches of a session — the ones the gate stops — so nearly half of
+  its refusals cost a turn for advice that could not apply. Re-running `init`
+  moves an existing install to the new matcher; a matcher you set yourself is
+  left alone.
 - The SWE-Explore table is read against the served five. The paper fixes K = 5
   for every explorer it compares, so the list of 20 is outside that protocol
   and is no longer presented as the like-for-like column.

@@ -21,13 +21,15 @@ import (
 // 0 allows it. It must stay fast and dependency-free — it runs on every gated
 // tool call (no DB, no model, no app init).
 //
-//	contextmaxxer hook pre-search   # PreToolUse on Grep|Glob
+//	contextmaxxer hook pre-search   # PreToolUse on Grep
 //	contextmaxxer hook post-find    # PostToolUse on find_context (Claude Code)
 //	contextmaxxer hook search-signal # a search on Cursor/Codex: record, never block
 //
-// The gate forces an agent to lead with find_context: the first Grep/Glob in a
-// session is blocked until find_context has been called once, after which
-// grep/glob are allowed (for literal-string / filename / refinement searches).
+// The gate forces an agent to lead with find_context: the first Grep in a
+// session is blocked until find_context has been called once, after which grep
+// is allowed (for literal-string and refinement searches). Glob is never held:
+// it searches file names, which find_context does not answer — see
+// preSearchMatcher.
 // It fails open — any misconfiguration or missing session id allows the call.
 func RunHook(args []string) int {
 	if len(args) == 0 {

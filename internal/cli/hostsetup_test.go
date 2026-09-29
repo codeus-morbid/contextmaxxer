@@ -405,3 +405,77 @@ func TestRepairShellPathsKeepsAUserEditedBinary(t *testing.T) {
 		t.Fatalf("user binary not preserved: %s", got)
 	}
 }
+
+func gateMatcherIn(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range doc["hooks"].(map[string]any)["PreToolUse"].([]any) {
+		m := e.(map[string]any)
+		if b, _ := json.Marshal(m); strings.Contains(string(b), "hook pre-search") {
+			s, _ := m["matcher"].(string)
+			return s
+		}
+	}
+	t.Fatal("no pre-search hook")
+	return ""
+}
+
+// The gate asks the agent to call find_context before searching, and a file
+// name search is not something find_context answers: it ranks symbols by what
+// they do. Glob was nearly half of the first searches the gate stopped (49 of
+// 103 across 1,640 searches in real sessions), each one a turn spent on
+// advice that could not apply.
+func TestGateDoesNotStopFileNameSearches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if _, err := mergeClaudeHooks(path, "ctxm"); err != nil {
+		t.Fatal(err)
+	}
+	if got := gateMatcherIn(t, path); got != "Grep" {
+		t.Fatalf("pre-search matcher = %q, want Grep", got)
+	}
+}
+
+// Every install before this change carries the Grep|Glob matcher, and the
+// merge treats a present hook as wired, so without a migration the change
+// would never reach anyone who already ran init.
+func TestExistingGateIsNarrowedToGrep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	seed := `{"hooks":{"PreToolUse":[{"matcher":"Grep|Glob","hooks":[{"type":"command","command":"ctxm hook pre-search"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := mergeClaudeHooks(path, "ctxm")
+	if err != nil || !changed {
+		t.Fatalf("an old matcher must be reported as changed: changed=%v err=%v", changed, err)
+	}
+	if got := gateMatcherIn(t, path); got != "Grep" {
+		t.Fatalf("pre-search matcher = %q, want Grep", got)
+	}
+	changed, err = mergeClaudeHooks(path, "ctxm")
+	if err != nil || changed {
+		t.Fatalf("second run must be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+// Only the exact matcher this installer used to write is migrated. A matcher
+// the user chose is theirs.
+func TestUserChosenGateMatcherIsKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	seed := `{"hooks":{"PreToolUse":[{"matcher":"Grep|Glob|Bash","hooks":[{"type":"command","command":"ctxm hook pre-search"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeClaudeHooks(path, "ctxm"); err != nil {
+		t.Fatal(err)
+	}
+	if got := gateMatcherIn(t, path); got != "Grep|Glob|Bash" {
+		t.Fatalf("user matcher rewritten to %q", got)
+	}
+}

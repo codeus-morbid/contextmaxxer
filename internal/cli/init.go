@@ -121,7 +121,7 @@ func printConfigBlocks(absRoot, cmdPath, dbPath, root string) {
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Grep|Glob", "hooks": [{ "type": "command", "command": %q }] }
+      { "matcher": "Grep", "hooks": [{ "type": "command", "command": %q }] }
     ],
     "PostToolUse": [
       { "matcher": "mcp__.*__find_context", "hooks": [{ "type": "command", "command": %q }] }
