@@ -1087,7 +1087,6 @@ func renderRelated(related []retrieve.RelatedFile) string {
 // a user runs does.
 const experimentalFindContextTuning = "CONTEXTMAXXER_EXPERIMENTAL_TOOLS"
 
-
 // experimentalFindContextOptions returns the tuning parameters, or nothing.
 //
 // They are off the published schema because a schema is paid for whether or not
