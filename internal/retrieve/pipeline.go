@@ -1363,8 +1363,15 @@ const (
 
 // rankingAmbiguous reports whether a ranking is ambiguous enough to justify
 // a (stronger) reranker pass: small relative top1-top2 gap or several
-// near-tied candidates. Mirrors the buildRetrievalHealth gap/tied logic.
-// Used both for escalation and for the lazy-rerank gate.
+// near-tied candidates. Used both for escalation and for the lazy-rerank gate,
+// both off in the shipped configuration.
+//
+// DECISION(2026-09): left as it is, but on a signal known to be suspect.
+// buildRetrievalHealth used the same gap/tie reading and it turned out
+// backwards on the final order (see there). This runs on the order BEFORE
+// reranking, where it has not been measured either way, so it is not switched
+// to consensus on faith. REVISIT IF: lazy rerank or escalation is turned on —
+// measure this gate against rank-1 correctness first.
 func rankingAmbiguous(scored []ScoredResult) bool {
 	if len(scored) < 2 {
 		return false
@@ -1538,8 +1545,24 @@ func isTestFile(path string) bool {
 const WeakMatchRelevance = 0.70
 
 // buildRetrievalHealth computes aggregate confidence signal about the retrieval.
-// DECISION: TopScoreGap is relative (gap/top1) to be scale-independent.
-// TiedCandidates counts top-5 within 10% of top1 to signal ambiguity.
+//
+// DECISION(2026-09): confidence is read from consensus — how many of the top
+// five results sit in rank 1's file — not from how far rank 1 leads.
+// Measured on all 848 SWE-Explore instances at the served default, with rank 1
+// counted right when its file is a gold file: consensus separates right from
+// wrong at AUROC 0.746 on title queries and 0.740 on raw issue text, and rank 1
+// is right 93-97% of the time when all five agree. The lead did the opposite.
+// A large top1-top2 gap and few near-ties — the old "high" — marked the LEAST
+// reliable answers (AUROC 0.418 and 0.428 on titles), so "low" fired on 74-85%
+// of calls without separating anything, and "high" was never emitted. A lone
+// leader is usually a name match standing apart from the code that actually
+// answers; the answer tends to bring several of its file's symbols with it.
+// ASSUMES: several results from one file means agreement, not one large file
+// crowding the list. REVISIT IF: a per-file result cap changes how often a
+// file can repeat in the top five.
+//
+// TopScoreGap and TiedCandidates stay in the struct as diagnostics; neither
+// decides the label.
 func buildRetrievalHealth(selected []ScoredResult, candidatesSeen int) *RetrievalHealth {
 	if len(selected) == 0 {
 		return nil
@@ -1569,18 +1592,24 @@ func buildRetrievalHealth(selected []ScoredResult, candidatesSeen int) *Retrieva
 		if top1 > 0 && (top1-sr.Score)/top1 <= 0.10 {
 			h.TiedCandidates++
 		}
+		if sr.File == selected[0].File {
+			h.Consensus++
+		}
 	}
 
 	switch {
-	case h.TopScoreGap >= 0.20 && h.TiedCandidates <= 1:
+	// Everything shown agreeing counts as consensus too: a position lookup
+	// answers with the enclosing symbols of one file, and a one-result answer
+	// has nothing to disagree with. Without this both read "low".
+	case h.Consensus >= 3 || h.Consensus == limit:
 		h.Confidence = "high"
-	case h.TopScoreGap >= 0.08 || h.TiedCandidates <= 2:
+	case h.Consensus == 2:
 		h.Confidence = "medium"
 	default:
 		h.Confidence = "low"
-		// Mirrors the measured hook guidance (reformulation lifted Hit@1
-		// 0.70->0.83): make the retry actionable, not generic.
-		h.Suggestion = "Tied scores. Rephrase in the vocabulary the code would use (mechanism nouns/verbs, likely identifier words), name the deciding function or action, one mechanism per query."
+		// Reformulation is the measured remedy (Hit@1 0.70->0.83); what
+		// changed is when it is offered — only where rank 1 stands alone.
+		h.Suggestion = "No file stands out: the top results come from unrelated places, and rank 1 is right less than half the time when that happens. Rephrase in the vocabulary the code would use (mechanism nouns/verbs, likely identifier words), name the deciding function or action, one mechanism per query."
 	}
 
 	// DECISION(2026-07): absolute floor on the cross-encoder's own verdict.

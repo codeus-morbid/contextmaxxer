@@ -291,8 +291,7 @@ func locatorResults(ctx context.Context, r *Retriever, req Request) ([]ScoredRes
 			StartLine:     s.StartLine,
 			EndLine:       s.EndLine,
 			// Descending synthetic scores: the order is already decided by
-			// containment, and a flat score would read downstream as a pile of
-			// ties, which is what buildRetrievalHealth calls low confidence.
+			// containment and anything downstream that sorts must keep it.
 			Score: 1 - float32(len(scored))/float32(len(picked)+1),
 			Why:   "locator",
 			Body:  body,

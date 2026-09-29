@@ -339,8 +339,11 @@ type RetrievalHealth struct {
 	CandidatesSeen int
 	TopScoreGap    float32
 	TiedCandidates int
-	Confidence     string
-	Suggestion     string
+	// Consensus is how many of the top five results share rank 1's file. It
+	// is what the confidence label is read from; see buildRetrievalHealth.
+	Consensus  int
+	Confidence string
+	Suggestion string
 }
 
 type Result struct {

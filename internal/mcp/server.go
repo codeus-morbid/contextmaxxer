@@ -310,6 +310,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			CandidatesSeen int     `json:"candidates_seen"`
 			TopScoreGap    float32 `json:"top_score_gap"`
 			TiedCandidates int     `json:"tied_candidates"`
+			Consensus      int     `json:"consensus"`
 			Confidence     string  `json:"confidence"`
 			Suggestion     string  `json:"suggestion,omitempty"`
 		}
@@ -467,6 +468,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				CandidatesSeen: rh.CandidatesSeen,
 				TopScoreGap:    rh.TopScoreGap,
 				TiedCandidates: rh.TiedCandidates,
+				Consensus:      rh.Consensus,
 				Confidence:     rh.Confidence,
 				Suggestion:     rh.Suggestion,
 			}
@@ -1084,6 +1086,7 @@ func renderRelated(related []retrieve.RelatedFile) string {
 // parameters back on the schema. The ablation harnesses in cmd/ set it; nothing
 // a user runs does.
 const experimentalFindContextTuning = "CONTEXTMAXXER_EXPERIMENTAL_TOOLS"
+
 
 // experimentalFindContextOptions returns the tuning parameters, or nothing.
 //

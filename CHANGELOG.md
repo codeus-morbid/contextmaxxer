@@ -26,6 +26,17 @@ All notable changes to Contextmaxxer are documented here. The project follows
   from the index rather than the cache, so an edit above a symbol no longer
   shifts what it cites.
 
+- **The low-confidence warning fired on most calls and meant nothing.** The
+  label was read from how far rank 1 leads the rest, and a clear leader turned
+  out to be the least reliable answer: over 848 SWE-Explore instances the
+  warning, with its advice to rephrase, reached 74-85% of calls, and the
+  answers it flagged were no worse than the ones it passed. Confidence is now
+  read from consensus — how many of the top five results share rank 1's file.
+  The warning fires about half as often and separates: on the same queries rank
+  1 is right 56% of the time when flagged and 82% when not, against 67% and 69%
+  before. False confidence on concepts absent from the repository is unchanged
+  or better on eight projects; retrieval itself is untouched.
+
 ### Changed
 
 - The SWE-Explore table is read against the served five. The paper fixes K = 5
